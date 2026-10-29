@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DmV554/alma-gantt/schema/ops-0.json",
+  "title": "alma batch operations, schema version 0",
+  "description": "Input of `alma apply`: a JSON array of operations, or one operation per line. The batch applies all or nothing.",
+  "type": "array",
+  "items": { "$ref": "#/$defs/op" },
+  "$defs": {
+    "fields": {
+      "description": "[[task]] keys from docs/format.md §6; values are strings (dates as YYYY-MM-DD) or arrays of strings. `constraint` is TYPE or TYPE:DATE.",
+      "type": "object",
+      "additionalProperties": { "oneOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] }
+    },
+    "op": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["op", "id", "name"],
+          "properties": { "op": { "const": "task.add" }, "id": { "type": "string" }, "name": { "type": "string" },
+            "parent": { "type": "string" }, "after": { "type": "string" }, "fields": { "$ref": "#/$defs/fields" },
+            "upsert": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "id"],
+          "properties": { "op": { "const": "task.set" }, "id": { "type": "string" }, "fields": { "$ref": "#/$defs/fields" },
+            "unset": { "type": "array", "items": { "type": "string" } } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "id"],
+          "properties": { "op": { "const": "task.rm" }, "id": { "type": "string" }, "cascade": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "id"],
+          "properties": { "op": { "const": "task.move" }, "id": { "type": "string" }, "parent": { "type": "string" },
+            "after": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "pred", "succ"],
+          "properties": { "op": { "const": "dep.add" }, "pred": { "type": "string" }, "succ": { "type": "string" },
+            "type": { "enum": ["FS", "SS", "FF", "SF"] }, "lag": { "type": "string" },
+            "nature": { "enum": ["mandatory", "discretionary"] }, "scope": { "enum": ["internal", "external"] },
+            "rationale": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "pred", "succ"],
+          "properties": { "op": { "const": "dep.rm" }, "pred": { "type": "string" }, "succ": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "id"],
+          "properties": { "op": { "const": "res.add" }, "id": { "type": "string" }, "name": { "type": "string" },
+            "kind": { "enum": ["work", "equipment", "material", "cost"] }, "rate": { "type": "string", "description": "AMOUNT/PER, e.g. 4.2/day" },
+            "max_units": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "task", "resource"],
+          "properties": { "op": { "const": "assign" }, "task": { "type": "string" }, "resource": { "type": "string" },
+            "units": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "task", "resource"],
+          "properties": { "op": { "const": "unassign" }, "task": { "type": "string" }, "resource": { "type": "string" } } }
+      ]
+    }
+  }
+}
