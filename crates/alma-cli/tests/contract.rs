@@ -1,0 +1,322 @@
+//! The agent contract (SPEC.md §8a), tested through the real binary: JSON output, dry run,
+//! atomicity, idempotency, pagination, line-local edits, batches and exit codes.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use serde_json::Value;
+
+const FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/hybrid-terminal.alma.toml"
+);
+
+/// A copy of the fixture in a fresh temporary directory.
+struct Plan {
+    dir: PathBuf,
+    file: PathBuf,
+}
+
+impl Plan {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("alma-contract-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("plan.alma.toml");
+        std::fs::copy(FIXTURE, &file).unwrap();
+        Self { dir, file }
+    }
+
+    fn text(&self) -> String {
+        std::fs::read_to_string(&self.file).unwrap()
+    }
+
+    fn alma(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_alma"))
+            .arg("--file")
+            .arg(&self.file)
+            .args(args)
+            .current_dir(&self.dir)
+            .output()
+            .unwrap()
+    }
+
+    fn json(&self, args: &[&str]) -> (i32, Value) {
+        let mut a = args.to_vec();
+        a.push("--json");
+        let out = self.alma(&a);
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "{args:?}: not JSON ({e}): {}",
+                String::from_utf8_lossy(&out.stdout)
+            )
+        });
+        (out.status.code().unwrap(), v)
+    }
+}
+
+impl Drop for Plan {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn changed_lines(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<&str>, Vec<&str>) = (a.lines().collect(), b.lines().collect());
+    // Lines only in one side, by a simple LCS-free count (edits here are local).
+    let common_prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let common_suffix = a[common_prefix..]
+        .iter()
+        .rev()
+        .zip(b[common_prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    (a.len() - common_prefix - common_suffix).max(b.len() - common_prefix - common_suffix)
+}
+
+#[test]
+fn json_output_on_every_query() {
+    let p = Plan::new("json");
+    let (code, v) = p.json(&["check"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["counts"]["error"], 0);
+    assert_eq!(v["counts"]["warn"], 0);
+    let (_, v) = p.json(&["show", "gate-sw"]);
+    assert_eq!(v["start"], "2027-03-08");
+    assert_eq!(v["finish"], "2027-04-30");
+    assert_eq!(v["tf"], 10.0);
+    let (_, v) = p.json(&["critical"]);
+    assert_eq!(v["critical"][0]["id"], "kickoff");
+    let (_, v) = p.json(&["explain", "uat"]);
+    assert_eq!(v["chain"][0]["driven_by"], "h4");
+    let (_, v) = p.json(&["ls", "--fields", "id,tf", "--critical"]);
+    assert!(
+        v["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["tf"] == 0.0)
+    );
+}
+
+#[test]
+fn ls_paginates() {
+    let p = Plan::new("page");
+    let (_, first) = p.json(&["ls", "--limit", "10", "--fields", "id"]);
+    assert_eq!(first["tasks"].as_array().unwrap().len(), 10);
+    assert_eq!(first["total"], 25);
+    let cursor = first["next_cursor"].as_str().unwrap().to_string();
+    let (_, second) = p.json(&["ls", "--limit", "10", "--cursor", &cursor, "--fields", "id"]);
+    assert_ne!(first["tasks"][0]["id"], second["tasks"][0]["id"]);
+    let (_, last) = p.json(&["ls", "--limit", "10", "--cursor", "20", "--fields", "id"]);
+    assert_eq!(last["tasks"].as_array().unwrap().len(), 5);
+    assert!(last.get("next_cursor").is_none());
+}
+
+#[test]
+fn dry_run_writes_nothing() {
+    let p = Plan::new("dry");
+    let before = p.text();
+    let (code, v) = p.json(&["task", "set", "yard-sw", "--duration", "55d", "--dry-run"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["end_date_delta"], "+5d");
+    assert_eq!(p.text(), before);
+    assert!(!p.dir.join(".alma").exists(), "no log entry for a dry run");
+}
+
+#[test]
+fn edits_change_only_their_lines() {
+    let p = Plan::new("local");
+    let before = p.text();
+    let (code, v) = p.json(&["task", "set", "yard-sw", "--duration", "55d"]);
+    assert_eq!(code, 0, "{v}");
+    let after = p.text();
+    assert_eq!(changed_lines(&before, &after), 1);
+    assert!(after.contains("duration = \"55d\""));
+    // Comments survive.
+    assert!(after.contains("# --- Yard subproject"));
+    assert_eq!(v["changed"][0]["id"], "yard");
+    assert!(p.dir.join(".alma/log.jsonl").exists());
+}
+
+#[test]
+fn failed_commands_leave_the_file_byte_identical() {
+    let p = Plan::new("atomic");
+    let before = p.text();
+    for args in [
+        vec!["dep", "add", "h4", "discovery"],               // cycle
+        vec!["task", "set", "nope", "--duration", "1d"],     // unknown task
+        vec!["task", "set", "uat", "--field", "duraton=1d"], // unknown key
+        vec!["task", "set", "uat", "--duration", "3mo"],     // bad duration
+        vec!["task", "rm", "h4"],                            // has dependents
+    ] {
+        let (code, v) = p.json(&args);
+        assert_eq!(code, 1, "{args:?}: {v}");
+        assert_eq!(v["ok"], false);
+        assert!(
+            v["errors"][0]["code"].as_str().unwrap().starts_with("E-"),
+            "{v}"
+        );
+        assert_eq!(p.text(), before, "{args:?} changed the file");
+    }
+    let (_, v) = p.json(&["task", "set", "uat", "--field", "duraton=1d"]);
+    assert_eq!(v["errors"][0]["hint"], "did you mean `duration`?");
+}
+
+#[test]
+fn adds_are_idempotent() {
+    let p = Plan::new("idem");
+    let args = [
+        "task",
+        "add",
+        "qa-plan",
+        "--name",
+        "QA plan",
+        "--parent",
+        "golive",
+        "--after",
+        "integration-tests",
+        "--duration",
+        "3d",
+    ];
+    let (code, v) = p.json(&args);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["noop"], false);
+    let once = p.text();
+    let (code, v) = p.json(&args);
+    assert_eq!(code, 0);
+    assert_eq!(v["noop"], true);
+    assert_eq!(p.text(), once);
+    // A different definition is an error unless --upsert.
+    let mut other = args.to_vec();
+    other[10] = "4d";
+    let (code, v) = p.json(&other);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-01"))
+    );
+    other.push("--upsert");
+    let (code, _) = p.json(&other);
+    assert_eq!(code, 0);
+    assert!(p.text().contains("duration = \"4d\""));
+    // dep add of the same link twice.
+    p.json(&["dep", "add", "integration-tests", "qa-plan"]);
+    let (_, v) = p.json(&["dep", "add", "integration-tests", "qa-plan"]);
+    assert_eq!(v["noop"], true);
+}
+
+#[test]
+fn batches_are_all_or_nothing() {
+    let p = Plan::new("batch");
+    let before = p.text();
+    let ops = p.dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+            {"op": "task.add", "id": "docs", "name": "Documentation", "parent": "golive", "fields": {"duration": "5d"}},
+            {"op": "dep.add", "pred": "uat", "succ": "docs"},
+            {"op": "dep.add", "pred": "docs", "succ": "missing"}
+        ]"#,
+    )
+    .unwrap();
+    let (code, v) = p.json(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 1);
+    assert!(
+        v["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("operation #3")
+    );
+    assert_eq!(p.text(), before);
+
+    std::fs::write(
+        &ops,
+        "{\"op\": \"task.add\", \"id\": \"docs\", \"name\": \"Documentation\", \"parent\": \"golive\", \"fields\": {\"duration\": \"5d\"}}\n\
+         {\"op\": \"dep.add\", \"pred\": \"uat\", \"succ\": \"docs\"}\n\
+         {\"op\": \"dep.add\", \"pred\": \"docs\", \"succ\": \"finish\"}\n",
+    )
+    .unwrap();
+    let (code, v) = p.json(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 0, "{v}");
+    assert!(p.text().contains("id = \"docs\""));
+}
+
+#[test]
+fn exit_codes() {
+    let p = Plan::new("exit");
+    assert_eq!(p.alma(&["check"]).status.code(), Some(0));
+    assert_eq!(p.alma(&["frobnicate"]).status.code(), Some(2));
+    let missing = Command::new(env!("CARGO_BIN_EXE_alma"))
+        .args(["--file", "/nonexistent/plan.alma.toml", "check"])
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(2));
+    std::fs::write(&p.file, "[project]\nformat = 0\nname = \"x\"\n").unwrap();
+    assert_eq!(p.alma(&["check"]).status.code(), Some(1));
+}
+
+#[test]
+fn init_creates_a_valid_plan_and_an_agent_can_build_on_it() {
+    let dir = std::env::temp_dir().join(format!("alma-contract-{}-init", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_alma"))
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    let out = run(&[
+        "init",
+        "new.alma.toml",
+        "--name",
+        "New",
+        "--start",
+        "2027-01-04",
+    ]);
+    assert!(out.status.success());
+    // The file is found without --file because it is the only plan in the directory.
+    for args in [
+        vec![
+            "task",
+            "add",
+            "start",
+            "--name",
+            "Start",
+            "--kind",
+            "milestone",
+        ],
+        vec!["task", "add", "work", "--name", "Work", "--duration", "5d"],
+        vec![
+            "task",
+            "add",
+            "done",
+            "--name",
+            "Done",
+            "--kind",
+            "milestone",
+        ],
+        vec!["dep", "add", "start", "work"],
+        vec!["dep", "add", "work", "done"],
+    ] {
+        assert!(run(&args).status.success(), "{args:?}");
+    }
+    let out = run(&["show", "done", "--json"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["start"], "2027-01-08");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = Path::new("unused");
+}
+
+#[test]
+fn guide_and_schema_print() {
+    let p = Plan::new("guide");
+    let out = p.alma(&["guide"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Recommended loop"));
+    let out = p.alma(&["schema"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["type"], "array");
+}
