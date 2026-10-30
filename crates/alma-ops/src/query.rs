@@ -134,30 +134,7 @@ pub const TASK_FIELDS: &[&str] = &[
     "ls", "lf", "tf", "ff", "critical",
 ];
 
-/// WBS codes in source order.
-pub fn wbs_codes(plan: &Plan, index: &PlanIndex) -> Vec<String> {
-    let mut codes = vec![String::new(); plan.tasks.len()];
-    let mut counters: Vec<usize> = vec![0; plan.tasks.len()];
-    let mut roots = 0usize;
-    for i in 0..plan.tasks.len() {
-        match index.parent[i] {
-            None => {
-                roots += 1;
-                codes[i] = roots.to_string();
-            }
-            Some(p) => {
-                counters[p] += 1;
-                codes[i] = if codes[p].is_empty() {
-                    // Parent appears after the child: fall back to the child's position.
-                    counters[p].to_string()
-                } else {
-                    format!("{}.{}", codes[p], counters[p])
-                };
-            }
-        }
-    }
-    codes
-}
+pub use alma_layout::wbs_codes;
 
 /// Builds the views of every task, in source order.
 pub fn task_views(plan: &Plan, schedule: &Schedule) -> Vec<TaskView> {
