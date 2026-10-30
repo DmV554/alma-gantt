@@ -14,6 +14,8 @@ Pick the file with `--file plan.alma.toml`, `ALMA_FILE`, or run in a directory w
    and finish milestones.
 4. Run `alma check --json` and fix what it reports; `alma explain <id>` says why a date is
    where it is. Repeat until there are no `error` or `warn` diagnostics.
+5. Look at the result: `alma export gantt.png` and open the image. Critical work is red,
+   summaries are black brackets, milestones are diamonds, sprints are shaded bands.
 
 For many changes at once, write the operations to a file and run `alma apply ops.json`
 (all or nothing). `alma schema` prints the JSON Schema of operations.
@@ -35,6 +37,9 @@ alma res add <id> [--name "..."] [--rate 4.2/day] [--max 3]
 alma assign <task> <resource> [--units 0.5]
 alma unassign <task> <resource>
 alma apply ops.json | -                  # batch (JSON array or JSON lines)
+
+alma export gantt.png [--range 2027-01..2027-06] [--depth 2] [--scale week] [--dark]
+alma export gantt.svg | plan.csv | - --format csv
 
 alma check [--min warn] [--limit N --cursor C]
 alma ls [--parent P] [--critical] [--kind milestone] [--fields id,name,start,finish,tf]

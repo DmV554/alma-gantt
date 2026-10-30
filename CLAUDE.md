@@ -17,7 +17,9 @@ tool, with agents doing most of the planning and humans able to edit anything by
   (`alma-sched`), the parser with the key registry (`alma-format`), queries and lossless
   mutations (`alma-ops`), and the CLI with the agent contract (`alma-cli`). The fixture schedules
   and lints cleanly.
-- Not yet: SVG/PNG export (`render`, `alma-layout`/`alma-export`), `alma fmt`, `alma diff`,
+- SVG/PNG/CSV export (`alma-layout`, `alma-export`, ADR 0009). Text widths are estimated until a
+  font is bundled.
+- Not yet: `alma fmt`, `alma diff`,
   baselines, leveling, `cadence` commands, the recorded agent acceptance session (SPEC §5).
 - `docs/format.md` is the normative reference for plan files (ADRs 0005–0008). Read it before
   touching `alma-format` or the model.
@@ -38,12 +40,13 @@ tool, with agents doing most of the planning and humans able to edit anything by
 | `crates/alma-sched` | Scheduling engine: pure functions over `alma-core` |
 | `crates/alma-format` | Lossless TOML read/write (`toml_edit`) |
 | `crates/alma-ops` | Command layer shared by the CLI, the MCP server and the GUI |
+| `crates/alma-layout` | Scheduled plan → display list (pure) |
+| `crates/alma-export` | Display list → SVG and PNG |
 | `crates/alma-cli` | The `alma` binary |
 | `examples/` | Sample plans; they double as golden-test fixtures |
 | `prototype/` | UI sketch |
 
-Crates planned for later milestones (do not create them before they are needed): `alma-layout`,
-`alma-export`, `alma-interop`, `alma-mcp`, `alma-wasm`, `app/`.
+Crates planned for later milestones (do not create them before they are needed): `alma-interop`, `alma-mcp`, `alma-wasm`, `app/`.
 
 ## Commands
 
