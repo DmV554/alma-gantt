@@ -320,3 +320,26 @@ fn guide_and_schema_print() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["type"], "array");
 }
+
+#[test]
+fn export_writes_files_and_reports_json() {
+    let p = Plan::new("export");
+    let out = p.dir.join("gantt.svg");
+    let (code, v) = p.json(&["export", out.to_str().unwrap()]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["format"], "svg");
+    assert!(std::fs::read_to_string(&out).unwrap().starts_with("<svg"));
+    let png = p.dir.join("gantt.png");
+    let (code, _) = p.json(&[
+        "render",
+        png.to_str().unwrap(),
+        "--range",
+        "2027-01..2027-03",
+    ]);
+    assert_eq!(code, 0);
+    assert!(std::fs::metadata(&png).unwrap().len() > 1000);
+    let csv = p.alma(&["export", "-", "--format", "csv"]);
+    assert!(String::from_utf8_lossy(&csv.stdout).starts_with("wbs,id,name"));
+    let (code, _) = p.json(&["export", "x.pdf"]);
+    assert_eq!(code, 2);
+}

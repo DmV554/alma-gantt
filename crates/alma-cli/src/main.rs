@@ -115,6 +115,34 @@ enum Cmd {
         #[command(flatten)]
         m: MutArgs,
     },
+    /// Export the Gantt chart (.svg, .png) or the task table (.csv); `-` writes SVG or CSV
+    /// to stdout. `render` is an alias.
+    #[command(alias = "render")]
+    Export {
+        /// Output file; the extension picks the format unless --format is given.
+        out: PathBuf,
+        /// svg, png or csv.
+        #[arg(long)]
+        format: Option<String>,
+        /// Time range, e.g. 2027-01..2027-06 or 2027-01-04..2027-03-31.
+        #[arg(long)]
+        range: Option<String>,
+        /// Deepest WBS level shown (1 = top level only).
+        #[arg(long)]
+        depth: Option<usize>,
+        /// day, week or month (default: from the range length).
+        #[arg(long)]
+        scale: Option<String>,
+        /// Dark theme.
+        #[arg(long)]
+        dark: bool,
+        /// Hide dependency arrows.
+        #[arg(long)]
+        no_arrows: bool,
+        /// Base font size in points (minimum 9).
+        #[arg(long)]
+        font_size: Option<f64>,
+    },
     /// Print the usage guide for LLM agents.
     Guide,
     /// Print the JSON Schema of batch operations.
@@ -719,6 +747,66 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             let parsed = parse_ops(&text).map_err(Usage)?;
             mutation(file, &parsed, m.dry_run, json)
         }
+        Cmd::Export {
+            out,
+            format,
+            range,
+            depth,
+            scale,
+            dark,
+            no_arrows,
+            font_size,
+        } => {
+            let (_, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+            let format = format.unwrap_or_else(|| {
+                out.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("svg")
+                    .to_ascii_lowercase()
+            });
+            let req = alma_ops::export::RenderRequest {
+                range,
+                depth,
+                scale,
+                dark,
+                no_arrows,
+                font_size,
+            };
+            let bytes: Vec<u8> = match format.as_str() {
+                "svg" => alma_ops::export::svg(plan, s, &req)
+                    .map_err(Usage)?
+                    .into_bytes(),
+                "png" => alma_ops::export::png(plan, s, &req).map_err(Usage)?,
+                "csv" => alma_ops::export::csv(plan, s).into_bytes(),
+                other => {
+                    return Err(Usage(format!(
+                        "unknown format `{other}`; use svg, png or csv"
+                    )));
+                }
+            };
+            if out.as_os_str() == "-" {
+                if format == "png" {
+                    return Err(Usage(
+                        "PNG cannot be written to stdout; give a file name".into(),
+                    ));
+                }
+                print!("{}", String::from_utf8_lossy(&bytes));
+                return Ok(ExitCode::SUCCESS);
+            }
+            write_bytes(&out, &bytes)?;
+            if json {
+                print_json(
+                    &serde_json::json!({ "ok": true, "file": out, "format": format, "bytes": bytes.len() }),
+                );
+            } else {
+                println!("wrote {} ({format}, {} bytes)", out.display(), bytes.len());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Guide => {
             print!("{GUIDE}");
             Ok(ExitCode::SUCCESS)
@@ -728,6 +816,21 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Writes bytes through a temporary file and a rename, like plan writes.
+fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Usage> {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let tmp = dir.join(format!(".alma-export-{}.tmp", std::process::id()));
+    std::fs::write(&tmp, bytes)
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            Usage(format!("cannot write {}: {e}", path.display()))
+        })
 }
 
 /// Parses a JSON array of operations, or one operation per line (JSON lines).
