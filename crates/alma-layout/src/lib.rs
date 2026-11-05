@@ -44,6 +44,8 @@ pub struct Theme {
     pub sprint: Color,
     /// Non-working days.
     pub weekend: Color,
+    /// Non-critical dependency arrows.
+    pub arrow: Color,
 }
 
 impl Theme {
@@ -58,6 +60,7 @@ impl Theme {
         crit: Color::hex(0xc0432f),
         sprint: Color::hex(0xe8eee0),
         weekend: Color::hex(0xf4f5f2),
+        arrow: Color::hex(0xa9b2ad),
     };
     /// Dark theme.
     pub const DARK: Theme = Theme {
@@ -68,8 +71,9 @@ impl Theme {
         bar: Color::hex(0x6fa3a6),
         bar_soft: Color::hex(0x27403f),
         crit: Color::hex(0xf07a62),
-        sprint: Color::hex(0x1f2a22),
-        weekend: Color::hex(0x151918),
+        sprint: Color::hex(0x2a3a2d),
+        weekend: Color::hex(0x161a19),
+        arrow: Color::hex(0x5d6863),
     };
 }
 
@@ -391,7 +395,8 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
         }
     }
 
-    // Sprint bands.
+    // Sprint bands; their labels are drawn after the grid so no line crosses them.
+    let mut sprint_labels: Vec<(f64, String, Color)> = Vec::new();
     let band_y = title_h + row_h * 2.0;
     for c in &plan.cadences {
         let ccal = c
@@ -418,15 +423,8 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
                 }
                 let label = fit_text(&id, small, Weight::Normal, x2 - x1 - 2.0);
                 if !label.starts_with('…') {
-                    p.push(text(
-                        (x1 + x2) / 2.0,
-                        band_y + row_h * 0.65,
-                        label,
-                        small,
-                        Weight::Normal,
-                        Anchor::Middle,
-                        theme.muted,
-                    ));
+                    let band = if n % 2 == 0 { theme.sprint } else { theme.bg };
+                    sprint_labels.push(((x1 + x2) / 2.0, label, band));
                 }
             }
             start = ccal.next_start(end);
@@ -508,6 +506,28 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
             }
         }
         d += 1;
+    }
+
+    for (x, label, band) in sprint_labels {
+        let w = text_width(&label, small, Weight::Normal) + 4.0;
+        p.push(Prim::Rect {
+            x: x - w / 2.0,
+            y: band_y + row_h * 0.15,
+            w,
+            h: row_h * 0.7,
+            fill: Some(band),
+            stroke: None,
+            dashed: false,
+        });
+        p.push(text(
+            x,
+            band_y + row_h * 0.65,
+            label,
+            small,
+            Weight::Normal,
+            Anchor::Middle,
+            theme.muted,
+        ));
     }
 
     // Column headers and separators.
@@ -604,44 +624,77 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
         let color = if d.critical { theme.crit } else { theme.bar };
         let (x1, x2) = (x_of(d.es), x_of(d.ef));
         if index.is_summary(i) {
+            // With its children hidden (--depth), a summary carries their critical color.
+            let children_shown = index.children[i].iter().any(|c| row_of.contains_key(c));
+            let fill = if d.critical && !children_shown {
+                theme.crit
+            } else {
+                theme.ink
+            };
             let h = bar_h * 0.4;
             p.push(Prim::Rect {
                 x: x1,
                 y: mid - h,
                 w: (x2 - x1).max(1.0),
                 h,
-                fill: Some(theme.ink),
+                fill: Some(fill),
                 stroke: None,
                 dashed: false,
             });
             for x in [x1, x2] {
                 p.push(Prim::Poly {
                     points: vec![(x - 3.0, mid - h), (x + 3.0, mid - h), (x, mid + h)],
-                    fill: Some(theme.ink),
+                    fill: Some(fill),
                     stroke: None,
                     width: 0.0,
                 });
             }
+            // Summary bars are too thin for cut marks; their end triangles show the extent.
             continue;
         }
         if let Some(deadline) = t.deadline {
-            // A small downward triangle and a line at the end of the deadline day.
-            let x = x_of(start_of(deadline) + DAY);
+            // A line with a small downward triangle at the end of the deadline day, labelled;
+            // red only when the task finishes after it.
+            let due = start_of(deadline) + DAY;
+            let missed = d.ef > due;
+            let ink = if missed { theme.crit } else { theme.muted };
+            let x = x_of(due);
             let top_y = row_y(r) + 2.0;
             p.push(Prim::Line {
                 x1: x,
                 y1: top_y,
                 x2: x,
                 y2: row_y(r) + row_h - 2.0,
-                stroke: theme.crit,
+                stroke: ink,
                 width: 1.0,
             });
             p.push(Prim::Poly {
                 points: vec![(x - 3.5, top_y), (x + 3.5, top_y), (x, top_y + 4.0)],
-                fill: Some(theme.crit),
+                fill: Some(ink),
                 stroke: None,
                 width: 0.0,
             });
+            let label = format!(
+                "{} {} {}",
+                if missed { "missed" } else { "due" },
+                deadline.day(),
+                MONTHS[(deadline.month() - 1) as usize]
+            );
+            let w = text_width(&label, small, Weight::Normal);
+            let (lx, anchor) = if x + 4.0 + w <= left + chart_w {
+                (x + 4.0, Anchor::Start)
+            } else {
+                (x - 4.0, Anchor::End)
+            };
+            p.push(text(
+                lx,
+                mid + small * 0.35,
+                label,
+                small,
+                Weight::Normal,
+                anchor,
+                ink,
+            ));
         }
         match t.kind {
             TaskKind::Milestone => {
@@ -690,6 +743,9 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
                 dashed: false,
             }),
         }
+        if t.kind != TaskKind::Milestone {
+            cut_marks(&mut p, x1, x2, left, left + chart_w, mid, theme.bg);
+        }
     }
 
     // Dependency arrows between shown rows.
@@ -711,12 +767,13 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
                 let x1 = x_of(if from_end { pd.ef } else { pd.es });
                 let x2 = x_of(if to_end { sd.ef } else { sd.es });
                 let (y1, y2) = (row_y(pr) + row_h / 2.0, row_y(sr) + row_h / 2.0);
-                let color = if pd.critical && sd.critical {
-                    theme.crit
+                let critical = pd.critical && sd.critical;
+                let (color, width) = if critical {
+                    (theme.crit, 0.8)
                 } else {
-                    theme.muted
+                    (theme.arrow, 0.6)
                 };
-                p.push(arrow(x1, y1, x2, y2, to_end, row_h, color));
+                p.push(arrow(x1, y1, x2, y2, to_end, row_h, color, width));
             }
         }
     }
@@ -731,7 +788,17 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
 }
 
 /// An orthogonal arrow from `(x1, y1)` to `(x2, y2)`; `into_end` points it left.
-fn arrow(x1: f64, y1: f64, x2: f64, y2: f64, into_end: bool, row_h: f64, color: Color) -> Prim {
+#[allow(clippy::too_many_arguments)]
+fn arrow(
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    into_end: bool,
+    row_h: f64,
+    color: Color,
+    width: f64,
+) -> Prim {
     let gap = 5.0;
     let mut pts = vec![(x1, y1)];
     let out = if into_end { x2.max(x1) + gap } else { x1 + gap };
@@ -767,7 +834,35 @@ fn arrow(x1: f64, y1: f64, x2: f64, y2: f64, into_end: bool, row_h: f64, color: 
         points: pts,
         fill: None,
         stroke: Some(color),
-        width: 0.7,
+        width,
+    }
+}
+
+/// Small chevrons where a bar runs past the left or right edge of the shown range.
+fn cut_marks(p: &mut Vec<Prim>, x1: f64, x2: f64, lo: f64, hi: f64, mid: f64, color: Color) {
+    if x1 < lo && x2 > lo + 8.0 {
+        p.push(Prim::Poly {
+            points: vec![
+                (lo + 2.0, mid),
+                (lo + 6.0, mid - 3.0),
+                (lo + 6.0, mid + 3.0),
+            ],
+            fill: Some(color),
+            stroke: None,
+            width: 0.0,
+        });
+    }
+    if x2 > hi && x1 < hi - 8.0 {
+        p.push(Prim::Poly {
+            points: vec![
+                (hi - 2.0, mid),
+                (hi - 6.0, mid - 3.0),
+                (hi - 6.0, mid + 3.0),
+            ],
+            fill: Some(color),
+            stroke: None,
+            width: 0.0,
+        });
     }
 }
 
@@ -820,7 +915,8 @@ mod tests {
 
     #[test]
     fn arrow_ends_at_target() {
-        let Prim::Poly { points, .. } = arrow(10.0, 5.0, 40.0, 25.0, false, 20.0, Color(0, 0, 0))
+        let Prim::Poly { points, .. } =
+            arrow(10.0, 5.0, 40.0, 25.0, false, 20.0, Color(0, 0, 0), 0.6)
         else {
             panic!()
         };
