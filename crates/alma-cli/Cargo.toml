@@ -1,0 +1,21 @@
+[package]
+name = "alma-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "alma"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+alma-core.workspace = true
+alma-ops.workspace = true
+serde.workspace = true
+clap.workspace = true
+serde_json.workspace = true
