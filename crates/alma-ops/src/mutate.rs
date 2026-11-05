@@ -356,12 +356,7 @@ pub fn apply_to_file(path: &Path, ops: &[Op], dry_run: bool) -> std::io::Result<
 
 /// Writes `text` to `path` through a temporary file in the same directory and a rename.
 pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("plan");
-    let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
+    let tmp = crate::files::temp_next_to(path);
     std::fs::write(&tmp, text)?;
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),

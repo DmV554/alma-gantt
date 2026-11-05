@@ -3,6 +3,7 @@
 
 pub mod diff;
 pub mod export;
+pub mod files;
 pub mod mutate;
 pub mod query;
 pub mod schema;
@@ -10,7 +11,7 @@ pub mod schema;
 /// The format key registry, for `alma keys`.
 pub use alma_format::keys;
 
-use alma_core::diag::{Diagnostic, Severity};
+pub use alma_core::diag::{Diagnostic, Severity};
 use alma_core::model::Plan;
 use alma_sched::Schedule;
 use serde::Serialize;
@@ -39,6 +40,11 @@ impl Loaded {
             .iter()
             .any(|d| d.severity == Severity::Error)
     }
+}
+
+/// The project finish date (the day of the last early finish), as `YYYY-MM-DD`.
+pub fn project_finish(schedule: &Schedule) -> String {
+    alma_core::time::finish_date(schedule.finish).to_string()
 }
 
 /// Parses, schedules and lints plan text.
