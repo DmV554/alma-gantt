@@ -519,3 +519,38 @@ fn rule_set_and_keys() {
     let (_, v) = p.json(&["critical"]);
     assert_eq!(v["project_finish"], "2027-07-30");
 }
+
+#[test]
+fn moved_tasks_render_under_their_new_parent() {
+    // Regression: a moved table kept its old toml_edit position and stayed in place in the file.
+    let p = Plan::new("move");
+    let (code, v) = p.json(&["task", "move", "gate-sw", "--parent", "mgmt"]);
+    assert_eq!(code, 0, "{v}");
+    let text = p.text();
+    let at = |s: &str| text.find(s).unwrap();
+    assert!(at("id = \"decision-gate\"") < at("id = \"gate-sw\""));
+    assert!(at("id = \"gate-sw\"") < at("id = \"platform\""));
+    let (code, v) = p.json(&["fmt", "--check"]);
+    assert_eq!(
+        (code, v["changed"].clone()),
+        (0, Value::Bool(false)),
+        "still canonical"
+    );
+}
+
+#[test]
+fn empty_plans_export_and_query() {
+    let p = Plan::new("empty");
+    std::fs::write(
+        &p.file,
+        "[project]\nformat = 0\nname = \"Empty\"\nstart = 2027-01-04\n",
+    )
+    .unwrap();
+    for args in [vec!["check"], vec!["critical"], vec!["ls"]] {
+        let (code, _) = p.json(&args);
+        assert_eq!(code, 0, "{args:?}");
+    }
+    let out = p.dir.join("e.svg");
+    let (code, _) = p.json(&["export", out.to_str().unwrap()]);
+    assert_eq!(code, 0);
+}

@@ -55,6 +55,7 @@ dependencies = [
  "alma-core",
  "alma-sched",
  "jiff",
+ "proptest",
 ]
 
 [[package]]
@@ -67,6 +68,7 @@ dependencies = [
  "alma-layout",
  "alma-sched",
  "jiff",
+ "proptest",
  "serde",
  "serde_json",
  "toml_edit",

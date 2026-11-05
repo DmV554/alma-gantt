@@ -13,3 +13,6 @@ workspace = true
 alma-core.workspace = true
 alma-sched.workspace = true
 jiff.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
