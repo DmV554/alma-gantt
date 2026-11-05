@@ -177,6 +177,8 @@ enum Cmd {
         /// Table; omit to list tables.
         table: Option<String>,
     },
+    /// Serve the same operations as MCP tools over stdio (for Claude Code and other MCP clients).
+    Mcp,
     /// Print the usage guide for LLM agents.
     Guide,
     /// Print the JSON Schema of batch operations.
@@ -1146,6 +1148,13 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                     );
                 }
             }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Mcp => {
+            let dir = std::env::current_dir()
+                .map_err(|e| Usage(format!("cannot read the current directory: {e}")))?;
+            let server = alma_mcp::AlmaServer::new(dir, file);
+            alma_mcp::serve_stdio(server).map_err(|e| Usage(format!("MCP server stopped: {e}")))?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Guide => {
