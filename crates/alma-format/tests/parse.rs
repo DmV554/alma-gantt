@@ -313,3 +313,71 @@ fn round_trip_is_byte_identical() {
         assert_eq!(doc.to_string(), src, "{path}");
     }
 }
+
+/// The plan without file positions, to compare meaning across layouts.
+fn meaning(src: &str) -> alma_core::model::Plan {
+    let mut p = parse(src).plan.expect("valid plan");
+    for t in &mut p.tasks {
+        t.span = None;
+    }
+    p
+}
+
+#[test]
+fn fmt_leaves_a_canonical_file_unchanged() {
+    let src = read("examples/hybrid-terminal.alma.toml");
+    assert_eq!(alma_format::format_text(&src).unwrap(), src);
+}
+
+#[test]
+fn fmt_reorders_without_changing_meaning() {
+    let messy = r#"[[task]]
+name = "Child"
+duration = "2d"
+parent = "phase"
+id = "child"
+deps = [{ lag = "1d", pred = "first", rationale = "cure" }]
+
+# The phase
+[[task]]
+id = "phase"
+name = "Phase"
+[[resource]]
+name = "Dev"
+id = "dev"
+
+[[task]]
+id = "first"
+name = "First"
+parent = "phase"
+duration = "1d"
+[project]
+start = 2027-01-04
+name = "Messy"
+format = 0
+"#;
+    let out = alma_format::format_text(messy).unwrap();
+    let pos = |needle: &str| {
+        out.find(needle)
+            .unwrap_or_else(|| panic!("{needle} in\n{out}"))
+    };
+    assert!(pos("[project]") < pos("[[resource]]"));
+    assert!(pos("[[resource]]") < pos("id = \"phase\""));
+    assert!(pos("id = \"phase\"") < pos("id = \"child\""));
+    assert!(pos("format = 0") < pos("name = \"Messy\""));
+    assert!(
+        out.contains("# The phase\n[[task]]\nid = \"phase\""),
+        "comment kept:\n{out}"
+    );
+    assert!(
+        out.contains("{ pred = \"first\", lag = \"1d\", rationale = \"cure\" }"),
+        "{out}"
+    );
+    let mut a = meaning(messy);
+    let mut b = meaning(&out);
+    // Task order may change (WBS order); compare sorted by id.
+    a.tasks.sort_by(|x, y| x.id.cmp(&y.id));
+    b.tasks.sort_by(|x, y| x.id.cmp(&y.id));
+    assert_eq!(a, b);
+    assert_eq!(alma_format::format_text(&out).unwrap(), out, "idempotent");
+}
