@@ -284,12 +284,27 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
                 .map(|d| d.es)
                 .min()
                 .unwrap_or(schedule.start);
-            let hi = schedule
+            let mut hi = schedule
                 .tasks
                 .iter()
                 .map(|d| d.ef)
                 .max()
                 .unwrap_or(schedule.finish);
+            // Include the last sprint, so a cadence is never cut off.
+            let cal = cals.project();
+            for c in &plan.cadences {
+                let mut t = cal.next_start(start_of(c.start));
+                for _ in 0..c.count {
+                    t = cal.next_start(cal.add(t, c.length.minutes));
+                }
+                hi = hi.max(t);
+            }
+            // And every deadline, which is drawn as a marker.
+            for t in &plan.tasks {
+                if let Some(d) = t.deadline {
+                    hi = hi.max(start_of(d) + DAY);
+                }
+            }
             (day_of(lo) - 2, day_of(hi - 1) + 3)
         }
     };
@@ -608,6 +623,25 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
                 });
             }
             continue;
+        }
+        if let Some(deadline) = t.deadline {
+            // A small downward triangle and a line at the end of the deadline day.
+            let x = x_of(start_of(deadline) + DAY);
+            let top_y = row_y(r) + 2.0;
+            p.push(Prim::Line {
+                x1: x,
+                y1: top_y,
+                x2: x,
+                y2: row_y(r) + row_h - 2.0,
+                stroke: theme.crit,
+                width: 1.0,
+            });
+            p.push(Prim::Poly {
+                points: vec![(x - 3.5, top_y), (x + 3.5, top_y), (x, top_y + 4.0)],
+                fill: Some(theme.crit),
+                stroke: None,
+                width: 0.0,
+            });
         }
         match t.kind {
             TaskKind::Milestone => {
