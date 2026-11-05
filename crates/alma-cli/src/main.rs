@@ -943,6 +943,16 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                     )));
                 }
             };
+            let warnings = if format == "csv" {
+                Vec::new()
+            } else {
+                alma_ops::export::warnings(plan, s, &req).map_err(Usage)?
+            };
+            for w in &warnings {
+                if !json {
+                    eprintln!("warning: {w}");
+                }
+            }
             if out.as_os_str() == "-" {
                 if format == "png" {
                     return Err(Usage(
@@ -955,7 +965,7 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             write_bytes(&out, &bytes)?;
             if json {
                 print_json(
-                    &serde_json::json!({ "ok": true, "file": out, "format": format, "bytes": bytes.len() }),
+                    &serde_json::json!({ "ok": true, "file": out, "format": format, "bytes": bytes.len(), "warnings": warnings }),
                 );
             } else {
                 println!("wrote {} ({format}, {} bytes)", out.display(), bytes.len());

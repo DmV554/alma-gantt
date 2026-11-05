@@ -79,6 +79,32 @@ pub fn png(plan: &Plan, schedule: &Schedule, req: &RenderRequest) -> Result<Vec<
     alma_export::to_png(&list, 2.0).map_err(|e| e.to_string())
 }
 
+/// Largest comfortable chart side, in points (an A0 sheet is about 3,370 pt wide).
+const MAX_COMFORT: f64 = 3400.0;
+
+/// Advice about a render, e.g. a chart too wide to read or print. Empty when all is well.
+pub fn warnings(
+    plan: &Plan,
+    schedule: &Schedule,
+    req: &RenderRequest,
+) -> Result<Vec<String>, String> {
+    let list = alma_layout::gantt(plan, schedule, &options(req)?);
+    let mut out = Vec::new();
+    if list.width > MAX_COMFORT {
+        out.push(format!(
+            "the chart is {:.0} pt wide (wider than A0); use a coarser --scale or a shorter --range",
+            list.width
+        ));
+    }
+    if list.height > MAX_COMFORT {
+        out.push(format!(
+            "the chart is {:.0} pt tall; use --depth to show fewer WBS levels",
+            list.height
+        ));
+    }
+    Ok(out)
+}
+
 /// The task table as CSV (RFC 4180 quoting), one row per task in WBS order.
 pub fn csv(plan: &Plan, schedule: &Schedule) -> String {
     let mut out =
