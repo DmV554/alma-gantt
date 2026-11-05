@@ -1,7 +1,7 @@
 //! The agent contract (SPEC.md §8a), tested through the real binary: JSON output, dry run,
 //! atomicity, idempotency, pagination, line-local edits, batches and exit codes.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use serde_json::Value;
@@ -308,7 +308,6 @@ fn init_creates_a_valid_plan_and_an_agent_can_build_on_it() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["start"], "2027-01-08");
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = Path::new("unused");
 }
 
 #[test]
@@ -342,4 +341,181 @@ fn export_writes_files_and_reports_json() {
     assert!(String::from_utf8_lossy(&csv.stdout).starts_with("wbs,id,name"));
     let (code, _) = p.json(&["export", "x.pdf"]);
     assert_eq!(code, 2);
+}
+
+#[test]
+fn fmt_check_and_rewrite() {
+    let p = Plan::new("fmt");
+    let (code, v) = p.json(&["fmt", "--check"]);
+    assert_eq!((code, v["changed"].clone()), (0, Value::Bool(false)));
+    // Swap two keys of the first task so the file is no longer canonical.
+    let text = p.text().replacen(
+        "id = \"mgmt\"\nname = \"Project management\"",
+        "name = \"Project management\"\nid = \"mgmt\"",
+        1,
+    );
+    std::fs::write(&p.file, &text).unwrap();
+    let (code, v) = p.json(&["fmt", "--check"]);
+    assert_eq!((code, v["changed"].clone()), (1, Value::Bool(true)));
+    assert_eq!(p.text(), text, "--check writes nothing");
+    let (code, _) = p.json(&["fmt"]);
+    assert_eq!(code, 0);
+    assert_eq!(p.text(), std::fs::read_to_string(FIXTURE).unwrap());
+}
+
+#[test]
+fn diff_against_a_file() {
+    let p = Plan::new("diff");
+    let old = p.dir.join("old.alma.toml.bak");
+    std::fs::copy(&p.file, &old).unwrap();
+    p.json(&["task", "set", "uat", "--duration", "12d"]);
+    let (code, v) = p.json(&["diff", "--against", old.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert_eq!(v["end_date_delta"], "+2d");
+    assert!(
+        v["changed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "uat")
+    );
+}
+
+#[test]
+fn iter_add_and_rm() {
+    let p = Plan::new("iter");
+    let (code, v) = p.json(&[
+        "iter",
+        "add",
+        "team-b",
+        "--prefix",
+        "b",
+        "--start",
+        "2027-04-05",
+        "--length",
+        "2w",
+        "--repeat",
+        "4",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let text = p.text();
+    assert!(text.find("id = \"team-b\"").unwrap() < text.find("[[task]]").unwrap());
+    // Generated ids join the global namespace: a task may not reuse one.
+    let (code, v) = p.json(&["task", "add", "b01", "--name", "Clash"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-REF-01"))
+    );
+    let (code, _) = p.json(&["cadence", "rm", "team-b"]);
+    assert_eq!(code, 0);
+    assert_eq!(p.text(), std::fs::read_to_string(FIXTURE).unwrap());
+}
+
+#[test]
+fn three_point_estimates_from_the_cli() {
+    let p = Plan::new("estimate");
+    let (code, v) = p.json(&[
+        "task",
+        "set",
+        "yard-lte",
+        "--estimate",
+        "20d/25d/35d",
+        "--basis",
+        "Supplier quote",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert!(
+        p.text().contains(
+            r#"estimate = { o = "20d", m = "25d", p = "35d", basis = "Supplier quote" }"#
+        )
+    );
+    let (code, v) = p.json(&["task", "set", "yard-lte", "--estimate", "20d/25d"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-04"))
+    );
+    let (code, v) = p.json(&["task", "set", "yard-lte", "--field", "estimate.bases=x"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-FMT-02"))
+    );
+}
+
+#[test]
+fn calendars_holidays_and_project_settings() {
+    let p = Plan::new("calendar");
+    // A holiday on the critical path moves the finish by its working days.
+    let (code, v) = p.json(&[
+        "cal",
+        "except",
+        "cl-standard",
+        "--name",
+        "Fiestas Patrias",
+        "--from",
+        "2027-06-21",
+        "--to",
+        "2027-06-22",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["end_date_delta"], "+2d");
+    let text = p.text();
+    assert!(
+        text.contains("working = false },\n  { name = \"Fiestas Patrias\""),
+        "one per line:\n{text}"
+    );
+    let (_, v) = p.json(&["explain", "pilot"]);
+    assert!(
+        v["chain"][0]["because"]
+            .as_str()
+            .unwrap()
+            .contains("Fiestas Patrias"),
+        "{v}"
+    );
+    // A second calendar, then make it the project default.
+    let (code, _) = p.json(&[
+        "cal",
+        "add",
+        "six-day",
+        "--workdays",
+        "mon,tue,wed,thu,fri,sat",
+    ]);
+    assert_eq!(code, 0);
+    let (code, v) = p.json(&["project", "set", "--calendar", "six-day"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(
+        v["end_date_delta"].as_str().unwrap().starts_with('-'),
+        "{v}"
+    );
+    let (code, v) = p.json(&["project", "set", "--calendar", "missing"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-REF-03"))
+    );
+}
+
+#[test]
+fn rule_set_and_keys() {
+    let p = Plan::new("rules");
+    let (_, before) = p.json(&["check"]);
+    let (code, _) = p.json(&["rule", "set", "L-WBS-07", "off"]);
+    assert_eq!(code, 0);
+    let (_, after) = p.json(&["check"]);
+    assert!(after["counts"]["info"].as_u64() < before["counts"]["info"].as_u64());
+    let (code, v) = p.json(&["rule", "set", "E-DEP-01", "off"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-FMT-03"))
+    );
+    let (_, v) = p.json(&["keys", "task"]);
+    let keys = v["keys"].as_array().unwrap();
+    assert!(
+        keys.iter()
+            .any(|k| k["key"] == "duration" && k["status"] == "active")
+    );
+    assert!(
+        keys.iter()
+            .any(|k| k["key"] == "iteration" && k["status"] == "reserved for M4")
+    );
+    let (_, v) = p.json(&["critical"]);
+    assert_eq!(v["project_finish"], "2027-07-30");
 }

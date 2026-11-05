@@ -16,7 +16,7 @@ use serde::Serialize;
 const GUIDE: &str = include_str!("../../../docs/agent-guide.md");
 
 #[derive(Parser)]
-#[command(name = "alma", version = alma_ops::VERSION, about = "Gantt planning for agents and humans")]
+#[command(name = "alma", bin_name = "alma", version = alma_ops::VERSION, about = "Gantt planning for agents and humans")]
 struct Cli {
     /// Plan file. Defaults to $ALMA_FILE, or the only *.alma.toml in the current directory.
     #[arg(short, long, global = true)]
@@ -28,6 +28,8 @@ struct Cli {
     cmd: Cmd,
 }
 
+// Built once per run from the command line; boxing variants would only add noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Cmd {
     /// Create a new plan file.
@@ -143,6 +145,38 @@ enum Cmd {
         #[arg(long)]
         font_size: Option<f64>,
     },
+    /// Rewrite the plan in canonical layout (key order, WBS order, spacing); comments are kept.
+    Fmt {
+        /// Only report whether the file is formatted (exit 1 if not).
+        #[arg(long)]
+        check: bool,
+    },
+    /// Compare the plan with another version: a file or a git revision.
+    Diff {
+        /// Older plan file.
+        #[arg(long, conflicts_with = "rev")]
+        against: Option<PathBuf>,
+        /// Git revision of the same file, e.g. HEAD or main.
+        #[arg(long)]
+        rev: Option<String>,
+    },
+    /// Iteration (sprint) cadences.
+    #[command(subcommand, alias = "cadence")]
+    Iter(IterCmd),
+    /// Working calendars and holidays.
+    #[command(subcommand)]
+    Cal(CalCmd),
+    /// Project settings.
+    #[command(subcommand)]
+    Project(ProjectCmd),
+    /// Lint rule configuration for this plan.
+    #[command(subcommand)]
+    Rule(RuleCmd),
+    /// List the keys a table accepts (task, project, calendar, resource, cadence, task.deps …).
+    Keys {
+        /// Table; omit to list tables.
+        table: Option<String>,
+    },
     /// Print the usage guide for LLM agents.
     Guide,
     /// Print the JSON Schema of batch operations.
@@ -250,6 +284,115 @@ enum DepCmd {
 }
 
 #[derive(Subcommand)]
+enum CalCmd {
+    /// Add a calendar. Use it with `project set --calendar ID` or `task set --field calendar=ID`.
+    Add {
+        /// Calendar id.
+        id: String,
+        /// Name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Working weekdays, comma-separated (default mon,tue,wed,thu,fri).
+        #[arg(long, value_delimiter = ',')]
+        workdays: Option<Vec<String>>,
+        /// Working intervals, comma-separated (default 09:00-13:00,14:00-18:00).
+        #[arg(long, value_delimiter = ',')]
+        hours: Option<Vec<String>>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Add a holiday or blackout period (non-working unless --working).
+    Except {
+        /// Calendar id.
+        calendar: String,
+        /// Name, shown by `explain`.
+        #[arg(long)]
+        name: String,
+        /// First day (YYYY-MM-DD).
+        #[arg(long)]
+        from: String,
+        /// Last day, inclusive (default: same as --from).
+        #[arg(long)]
+        to: Option<String>,
+        /// Extra working time instead of a holiday.
+        #[arg(long)]
+        working: bool,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectCmd {
+    /// Set project keys.
+    Set {
+        /// Project name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Default calendar id.
+        #[arg(long)]
+        calendar: Option<String>,
+        /// Project deadline (YYYY-MM-DD).
+        #[arg(long)]
+        deadline: Option<String>,
+        /// Currency label.
+        #[arg(long)]
+        currency: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum RuleCmd {
+    /// Set a lint rule's severity for the whole plan (off, info, warn, error).
+    Set {
+        /// Lint code, e.g. L-WBS-05.
+        code: String,
+        /// off, info, warn or error.
+        severity: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum IterCmd {
+    /// Add a cadence of COUNT equal iterations; ids are <prefix>01, <prefix>02, …
+    Add {
+        /// Cadence id.
+        id: String,
+        /// First iteration start (YYYY-MM-DD).
+        #[arg(long)]
+        start: String,
+        /// Iteration length, e.g. 10d or 2w.
+        #[arg(long)]
+        length: String,
+        /// Number of iterations.
+        #[arg(long = "repeat")]
+        count: u32,
+        /// Band label.
+        #[arg(long)]
+        name: Option<String>,
+        /// Prefix of generated iteration ids (default: the id).
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Calendar id.
+        #[arg(long)]
+        calendar: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Remove a cadence.
+    Rm {
+        /// Cadence id.
+        id: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+}
+
+#[derive(Subcommand)]
 enum ResCmd {
     /// Add a resource.
     Add {
@@ -304,6 +447,12 @@ struct TaskFields {
     /// Constraint as TYPE or TYPE:DATE, e.g. SNET:2027-03-01.
     #[arg(long)]
     constraint: Option<String>,
+    /// Three-point estimate OPTIMISTIC/MOST-LIKELY/PESSIMISTIC, e.g. 25d/30d/40d.
+    #[arg(long)]
+    estimate: Option<String>,
+    /// Basis of the estimate (where the numbers come from).
+    #[arg(long)]
+    basis: Option<String>,
     /// Any other task key, as KEY=VALUE (repeatable).
     #[arg(long = "field", value_name = "KEY=VALUE")]
     extra: Vec<String>,
@@ -323,6 +472,8 @@ impl TaskFields {
             ("acceptance", self.acceptance),
             ("deadline", self.deadline),
             ("constraint", self.constraint),
+            ("estimate", self.estimate),
+            ("estimate.basis", self.basis),
         ];
         for (k, v) in pairs {
             if let Some(v) = v {
@@ -587,14 +738,18 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 return Ok(code);
             }
             let path = query::critical(l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+            let finish = alma_core::time::finish_date(l.schedule.as_ref().unwrap().finish);
             if json {
-                print_json(
-                    &serde_json::json!({ "schema": alma_ops::OUTPUT_SCHEMA, "critical": path }),
-                );
+                print_json(&serde_json::json!({
+                    "schema": alma_ops::OUTPUT_SCHEMA,
+                    "project_finish": finish.to_string(),
+                    "critical": path,
+                }));
             } else {
                 for v in &path {
                     println!("{}\t{}\t{}\t{}", v.id, v.start, v.finish, v.name);
                 }
+                println!("project finish: {finish}");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -807,6 +962,208 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Cmd::Fmt { check } => {
+            let path = resolve_file(file)?;
+            let src = read(&path)?;
+            let out = match mutate::fmt_text(&src) {
+                Ok(out) => out,
+                Err(d) => {
+                    if json {
+                        print_json(&serde_json::json!({ "ok": false, "errors": [d] }));
+                    } else {
+                        print_diag(&d);
+                    }
+                    return Ok(ExitCode::from(1));
+                }
+            };
+            let changed = out != src;
+            if !check && changed {
+                mutate::write_atomic(&path, &out)
+                    .map_err(|e| Usage(format!("cannot write {}: {e}", path.display())))?;
+            }
+            if json {
+                print_json(
+                    &serde_json::json!({ "ok": !(check && changed), "changed": changed, "check": check }),
+                );
+            } else if changed {
+                println!(
+                    "{} {}",
+                    if check {
+                        "would reformat"
+                    } else {
+                        "reformatted"
+                    },
+                    path.display()
+                );
+            } else {
+                println!("{} is already formatted", path.display());
+            }
+            Ok(if check && changed {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            })
+        }
+        Cmd::Diff { against, rev } => {
+            let path = resolve_file(file)?;
+            let current = read(&path)?;
+            let old = match (against, rev) {
+                (Some(f), _) => read(&f)?,
+                (None, rev) => git_show(&path, rev.as_deref().unwrap_or("HEAD"))?,
+            };
+            let report = alma_ops::diff::diff(&alma_ops::load(&old), &alma_ops::load(&current));
+            if json {
+                print_json(&report);
+            } else {
+                if report.changed.is_empty() {
+                    println!("no dates moved");
+                }
+                for m in &report.changed {
+                    println!("  {}  start {}  finish {}", m.id, m.start, m.finish);
+                }
+                if let Some(d) = &report.end_date_delta {
+                    println!("project finish: {d}");
+                }
+                if !report.new_diagnostics.is_empty() {
+                    println!("new diagnostics:");
+                    report.new_diagnostics.iter().for_each(print_diag);
+                }
+                if !report.resolved_diagnostics.is_empty() {
+                    println!("resolved: {}", report.resolved_diagnostics.len());
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Iter(c) => {
+            let (op, m) = match c {
+                IterCmd::Add {
+                    id,
+                    start,
+                    length,
+                    count,
+                    name,
+                    prefix,
+                    calendar,
+                    m,
+                } => (
+                    Op::CadenceAdd {
+                        id,
+                        start,
+                        length,
+                        count,
+                        name,
+                        prefix,
+                        calendar,
+                    },
+                    m,
+                ),
+                IterCmd::Rm { id, m } => (Op::CadenceRm { id }, m),
+            };
+            mutation(file, &[op], m.dry_run, json)
+        }
+        Cmd::Cal(c) => {
+            let (op, m) = match c {
+                CalCmd::Add {
+                    id,
+                    name,
+                    workdays,
+                    hours,
+                    m,
+                } => (
+                    Op::CalAdd {
+                        id,
+                        name,
+                        workdays,
+                        hours,
+                    },
+                    m,
+                ),
+                CalCmd::Except {
+                    calendar,
+                    name,
+                    from,
+                    to,
+                    working,
+                    m,
+                } => (
+                    Op::CalExcept {
+                        calendar,
+                        name,
+                        to: to.unwrap_or_else(|| from.clone()),
+                        from,
+                        working,
+                    },
+                    m,
+                ),
+            };
+            mutation(file, &[op], m.dry_run, json)
+        }
+        Cmd::Project(ProjectCmd::Set {
+            name,
+            calendar,
+            deadline,
+            currency,
+            m,
+        }) => {
+            let mut fields = BTreeMap::new();
+            for (k, v) in [
+                ("name", name),
+                ("calendar", calendar),
+                ("deadline", deadline),
+                ("currency", currency),
+            ] {
+                if let Some(v) = v {
+                    fields.insert(k.to_string(), FieldValue::Text(v));
+                }
+            }
+            mutation(file, &[Op::ProjectSet { fields }], m.dry_run, json)
+        }
+        Cmd::Rule(RuleCmd::Set { code, severity, m }) => {
+            mutation(file, &[Op::RuleSet { code, severity }], m.dry_run, json)
+        }
+        Cmd::Keys { table } => {
+            let tables: Vec<&str> = {
+                let mut t: Vec<&str> = alma_ops::keys::KEYS.iter().map(|k| k.table).collect();
+                t.dedup();
+                t
+            };
+            let Some(table) = table else {
+                if json {
+                    print_json(&serde_json::json!({ "tables": tables }));
+                } else {
+                    println!("{}", tables.join("\n"));
+                }
+                return Ok(ExitCode::SUCCESS);
+            };
+            if !tables.contains(&table.as_str()) {
+                return Err(Usage(format!(
+                    "unknown table `{table}`; tables: {}",
+                    tables.join(", ")
+                )));
+            }
+            let rows: Vec<serde_json::Value> = alma_ops::keys::keys_of(&table)
+                .map(|k| {
+                    let tier = match k.tier {
+                        alma_ops::keys::Tier::A => "active".to_string(),
+                        alma_ops::keys::Tier::B => "accepted".to_string(),
+                        alma_ops::keys::Tier::R(m) => format!("reserved for {m}"),
+                    };
+                    serde_json::json!({ "key": k.key, "status": tier })
+                })
+                .collect();
+            if json {
+                print_json(&serde_json::json!({ "table": table, "keys": rows }));
+            } else {
+                for r in &rows {
+                    println!(
+                        "{:20} {}",
+                        r["key"].as_str().unwrap_or(""),
+                        r["status"].as_str().unwrap_or("")
+                    );
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Guide => {
             print!("{GUIDE}");
             Ok(ExitCode::SUCCESS)
@@ -816,6 +1173,32 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// The text of `path` at a git revision (`git show REV:./PATH`).
+fn git_show(path: &Path, rev: &str) -> Result<String, Usage> {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Usage(format!("{} is not a file name", path.display())))?;
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("show")
+        .arg(format!("{rev}:./{name}"))
+        .output()
+        .map_err(|e| Usage(format!("cannot run git: {e}")))?;
+    if !out.status.success() {
+        return Err(Usage(format!(
+            "git cannot show {name} at {rev}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    String::from_utf8(out.stdout).map_err(|_| Usage("the old version is not UTF-8".into()))
 }
 
 /// Writes bytes through a temporary file and a rename, like plan writes.
