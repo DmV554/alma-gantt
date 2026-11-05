@@ -12,7 +12,8 @@ tool, with agents doing most of the planning and humans able to edit anything by
 
 ## Current state
 
-- Milestone: **M0** (engine, file format, agent CLI). See `SPEC.md` §5 and the work order in §14.
+- Milestones: **M0** (engine, file format, agent CLI) and **M0.5** (MCP server, `alma mcp`,
+  ADR 0010) are done. Next is M1 (desktop editor). See `SPEC.md` §5.
 - Implemented: model and durations (`alma-core`), calendars, CPM and the M0 lint rules
   (`alma-sched`), the parser with the key registry (`alma-format`), queries and lossless
   mutations (`alma-ops`), and the CLI with the agent contract (`alma-cli`). The fixture schedules
@@ -36,7 +37,7 @@ tool, with agents doing most of the planning and humans able to edit anything by
 | Path | What it is |
 |---|---|
 | `SPEC.md` | Product and technical spec. The source of truth |
-| `docs/adr/` | Architecture decisions (0001–0008 accepted). Template: `0000-template.md` |
+| `docs/adr/` | Architecture decisions (0001–0010 accepted). Template: `0000-template.md` |
 | `docs/format.md` | Normative reference of the plan file format |
 | `docs/knowledge/` | Project-management reference notes from PMBOK 6, the WBS standard, the Agile Practice Guide and estimation sources. Each concept maps to model fields, engine behavior, lint rules (Annex A) and formulas (Annex B) |
 | `crates/alma-core` | Domain model: no I/O, no UI |
@@ -45,11 +46,13 @@ tool, with agents doing most of the planning and humans able to edit anything by
 | `crates/alma-ops` | Command layer shared by the CLI, the MCP server and the GUI |
 | `crates/alma-layout` | Scheduled plan → display list (pure) |
 | `crates/alma-export` | Display list → SVG and PNG |
+| `crates/alma-mcp` | MCP server (`alma mcp`) on `rmcp`; tools generated from the batch schema |
 | `crates/alma-cli` | The `alma` binary |
 | `examples/` | Sample plans; they double as golden-test fixtures |
 | `prototype/` | UI sketch |
 
-Crates planned for later milestones (do not create them before they are needed): `alma-interop`, `alma-mcp`, `alma-wasm`, `app/`.
+Crates planned for later milestones (do not create them before they are needed): `alma-interop`,
+`alma-wasm`, `app/`.
 
 ## Commands
 
@@ -68,6 +71,8 @@ The toolchain is pinned in `rust-toolchain.toml`.
 ### Architecture
 - `alma-core` and `alma-sched` never do I/O, never read the clock, never depend on UI or CLI crates.
 - The CLI, the MCP server and the GUI only call `alma-ops`; they never mutate the model directly (ADR 0004).
+- A new batch operation in `ops.schema.json` becomes an MCP tool automatically (ADR 0010); keep
+  the schema, `Op` and the docs in step.
 - Computed values (dates, float, costs) are never written to the plan file (ADR 0003).
 - Money uses `rust_decimal`, never floats. Time arithmetic is in working time on calendars.
 - Same input means same output: no `HashMap` iteration order in output, ties broken by source order.

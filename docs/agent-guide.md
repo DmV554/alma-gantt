@@ -6,6 +6,20 @@ nothing). A change either applies fully and leaves a valid file, or changes noth
 
 Pick the file with `--file plan.alma.toml`, `ALMA_FILE`, or run in a directory with one plan.
 
+## Through MCP
+
+`alma mcp` serves the same operations as MCP tools over stdio. In Claude Code:
+
+```
+claude mcp add alma -- alma mcp            # uses the only *.alma.toml in the working directory
+claude mcp add alma -- alma --file /path/plan.alma.toml mcp
+```
+
+Tools mirror the commands below: `check`, `list_tasks`, `show_task`, `critical_path`,
+`explain`, `diff`, `keys`, `render` (returns the chart as an image), `export`, `init`, `apply`,
+and one tool per operation (`task_add`, `dep_add`, `cal_except`, …, same fields as
+`alma schema`). Every tool takes an optional `file`; mutations take `dry_run`.
+
 ## Recommended loop
 
 0. Set up time: `cal add` for working days and hours, `cal except` for holidays and blackout
