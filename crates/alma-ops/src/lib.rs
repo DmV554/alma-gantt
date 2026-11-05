@@ -1,10 +1,14 @@
 //! Command layer shared by the CLI, the MCP server and the GUI: typed commands, validation,
 //! atomic transactions, operation log and JSON schemas (SPEC.md §8a, §9).
 
+pub mod diff;
 pub mod export;
 pub mod mutate;
 pub mod query;
 pub mod schema;
+
+/// The format key registry, for `alma keys`.
+pub use alma_format::keys;
 
 use alma_core::diag::{Diagnostic, Severity};
 use alma_core::model::Plan;

@@ -154,6 +154,77 @@ pub enum Op {
         /// Resource.
         resource: String,
     },
+    /// Add a cadence of equal iterations (sprints).
+    #[serde(rename = "cadence.add")]
+    CadenceAdd {
+        /// Id.
+        id: String,
+        /// First iteration start (YYYY-MM-DD).
+        start: String,
+        /// Iteration length, e.g. `10d`.
+        length: String,
+        /// Number of iterations.
+        count: u32,
+        /// Band label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Prefix of generated iteration ids (default: the id).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+        /// Calendar id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        calendar: Option<String>,
+    },
+    /// Remove a cadence.
+    #[serde(rename = "cadence.rm")]
+    CadenceRm {
+        /// Id.
+        id: String,
+    },
+    /// Set `[project]` keys (name, calendar, deadline, currency, description).
+    #[serde(rename = "project.set")]
+    ProjectSet {
+        /// Keys to set.
+        fields: BTreeMap<String, FieldValue>,
+    },
+    /// Add a working calendar.
+    #[serde(rename = "cal.add")]
+    CalAdd {
+        /// Id.
+        id: String,
+        /// Name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Working weekdays, e.g. `["mon", "tue", "wed", "thu", "fri"]`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workdays: Option<Vec<String>>,
+        /// Working intervals, e.g. `["09:00-13:00", "14:00-18:00"]`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hours: Option<Vec<String>>,
+    },
+    /// Add a holiday or other exception to a calendar (dates inclusive).
+    #[serde(rename = "cal.except")]
+    CalExcept {
+        /// Calendar id.
+        calendar: String,
+        /// Name, shown by `explain`.
+        name: String,
+        /// First day.
+        from: String,
+        /// Last day.
+        to: String,
+        /// True for extra working time (default: non-working).
+        #[serde(default)]
+        working: bool,
+    },
+    /// Set the severity of a lint rule for this plan (`off`, `info`, `warn`, `error`).
+    #[serde(rename = "rule.set")]
+    RuleSet {
+        /// Lint code, e.g. `L-WBS-05`.
+        code: String,
+        /// New severity.
+        severity: String,
+    },
 }
 
 /// A task whose dates moved.
@@ -358,7 +429,7 @@ fn dates(l: &Loaded) -> BTreeMap<String, (Instant, Instant)> {
     }
 }
 
-fn moved(before: &Loaded, after: &Loaded) -> Vec<Moved> {
+pub(crate) fn moved(before: &Loaded, after: &Loaded) -> Vec<Moved> {
     let (Some(plan), Some(_)) = (&after.plan, &after.schedule) else {
         return Vec::new();
     };
@@ -394,7 +465,7 @@ fn moved(before: &Loaded, after: &Loaded) -> Vec<Moved> {
     out
 }
 
-fn end_delta(before: &Loaded, after: &Loaded) -> Option<String> {
+pub(crate) fn end_delta(before: &Loaded, after: &Loaded) -> Option<String> {
     let (Some(b), Some(a), Some(plan)) = (&before.schedule, &after.schedule, &after.plan) else {
         return None;
     };
@@ -408,8 +479,9 @@ fn end_delta(before: &Loaded, after: &Loaded) -> Option<String> {
     })
 }
 
-fn new_diagnostics(before: &Loaded, after: &Loaded) -> Vec<Diagnostic> {
-    let key = |d: &Diagnostic| (d.code, d.ids.clone(), d.message.clone());
+pub(crate) fn new_diagnostics(before: &Loaded, after: &Loaded) -> Vec<Diagnostic> {
+    // Same rule on the same objects is the same finding, even if its message text changed.
+    let key = |d: &Diagnostic| (d.code, d.ids.clone());
     let old: std::collections::HashSet<_> = before.diagnostics.iter().map(key).collect();
     after
         .diagnostics
@@ -562,28 +634,108 @@ fn set_task_fields(
     fields: &BTreeMap<String, FieldValue>,
 ) -> Result<(), Diagnostic> {
     for (key, v) in fields {
+        if let Some((outer, inner)) = key.split_once('.') {
+            set_sub_field(table, id, outer, inner, v)?;
+            continue;
+        }
         check_settable(id, key)?;
-        let item = if key == "constraint" {
-            constraint_item(id, v)?
-        } else {
-            to_item(key, v)
+        let item = match key.as_str() {
+            "constraint" => constraint_item(id, v)?,
+            "estimate" => {
+                let (o, m, p) = split3(id, v)?;
+                for (k, x) in [("o", o), ("m", m), ("p", p)] {
+                    set_sub_field(table, id, "estimate", k, &FieldValue::Text(x))?;
+                }
+                continue;
+            }
+            "spans" => {
+                let FieldValue::Text(t) = v else {
+                    return Err(op_err("E-OPS-04", "spans must be FROM..TO", &[id]));
+                };
+                let (a, b) = t
+                    .split_once("..")
+                    .ok_or_else(|| op_err("E-OPS-04", "spans must be FROM..TO", &[id]))?;
+                set_sub_field(table, id, "spans", "from", &FieldValue::Text(a.into()))?;
+                set_sub_field(table, id, "spans", "to", &FieldValue::Text(b.into()))?;
+                continue;
+            }
+            "fixed_cost" => {
+                set_sub_field(table, id, "fixed_cost", "amount", v)?;
+                continue;
+            }
+            _ => to_item(key, v),
         };
         insert_canonical(table, "task", key, item);
     }
     Ok(())
 }
 
+/// `"25d/30d/40d"` → `("25d", "30d", "40d")`.
+fn split3(id: &str, v: &FieldValue) -> Result<(String, String, String), Diagnostic> {
+    let parts: Vec<String> = match v {
+        FieldValue::Text(t) => t.split('/').map(|x| x.trim().to_string()).collect(),
+        FieldValue::List(l) => l.clone(),
+    };
+    match parts.as_slice() {
+        [o, m, p] => Ok((o.clone(), m.clone(), p.clone())),
+        _ => Err(op_err(
+            "E-OPS-04",
+            "estimate must be OPTIMISTIC/MOST-LIKELY/PESSIMISTIC, e.g. 25d/30d/40d",
+            &[id],
+        )),
+    }
+}
+
+/// Sets one key of an inline sub-table (`estimate.basis`, `fixed_cost.accrue`,
+/// `custom.zone`), creating the table when needed.
+fn set_sub_field(
+    table: &mut Table,
+    id: &str,
+    outer: &str,
+    inner: &str,
+    v: &FieldValue,
+) -> Result<(), Diagnostic> {
+    const SUBS: &[&str] = &["estimate", "spans", "fixed_cost", "custom"];
+    if !SUBS.contains(&outer) {
+        return Err(op_err(
+            "E-OPS-04",
+            format!("`{outer}.{inner}`: only {} have sub-keys", SUBS.join(", ")),
+            &[id],
+        ));
+    }
+    let registry = format!("task.{outer}");
+    if outer != "custom" && keys::lookup(&registry, inner).is_none() {
+        let known: Vec<&str> = keys::keys_of(&registry).map(|k| k.key).collect();
+        return Err(op_err(
+            "E-FMT-02",
+            format!("unknown key `{inner}` in `{outer}`"),
+            &[id],
+        )
+        .with_hint(format!("`{outer}` takes: {}", known.join(", "))));
+    }
+    if table.get(outer).and_then(Item::as_inline_table).is_none() {
+        let mut t = InlineTable::new();
+        t.fmt();
+        insert_canonical(table, "task", outer, value(t));
+    }
+    let it = table
+        .get_mut(outer)
+        .and_then(Item::as_inline_table_mut)
+        .expect("just ensured");
+    let new: Value = match to_item(inner, v) {
+        Item::Value(x) => x,
+        _ => return Err(op_err("E-OPS-04", "invalid value", &[id])),
+    };
+    it.insert(inner, new);
+    let order: Vec<&str> = keys::keys_of(&registry).map(|k| k.key).collect();
+    let rank = |k: &str| order.iter().position(|x| *x == k).unwrap_or(usize::MAX);
+    it.sort_values_by(|a, _, b, _| rank(a.get()).cmp(&rank(b.get())));
+    it.fmt();
+    Ok(())
+}
+
 /// Keys that have their own commands or cannot be set as plain values.
-const STRUCTURED: &[&str] = &[
-    "id",
-    "parent",
-    "deps",
-    "assign",
-    "estimate",
-    "spans",
-    "fixed_cost",
-    "custom",
-];
+const STRUCTURED: &[&str] = &["id", "parent", "deps", "assign"];
 
 fn check_settable(id: &str, key: &str) -> Result<(), Diagnostic> {
     match keys::lookup("task", key) {
@@ -834,7 +986,7 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
                                 *v.decor_mut() = d;
                             }
                         }
-                        None => arr.push(link),
+                        None => push_like_last(arr, link),
                     }
                 }
                 None => {
@@ -898,31 +1050,7 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
                 })?;
                 t.insert("max_units", Item::Value(v));
             }
-            if doc
-                .get("resource")
-                .and_then(Item::as_array_of_tables)
-                .is_none()
-            {
-                doc.insert("resource", Item::ArrayOfTables(ArrayOfTables::new()));
-            }
-            let aot = doc["resource"]
-                .as_array_of_tables_mut()
-                .expect("just ensured");
-            if let Some(existing) = aot
-                .iter()
-                .find(|r| r.get("id").and_then(Item::as_str) == Some(id.as_str()))
-            {
-                if existing.to_string() == t.to_string() {
-                    return Ok(());
-                }
-                return Err(op_err(
-                    "E-OPS-01",
-                    format!("resource `{id}` already exists with a different definition"),
-                    &[id],
-                ));
-            }
-            aot.push(t);
-            Ok(())
+            push_top_table(doc, "resource", id, t)
         }
         Op::Assign {
             task,
@@ -953,7 +1081,7 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
                         Some(p) => {
                             arr.replace(p, a);
                         }
-                        None => arr.push(a),
+                        None => push_like_last(arr, a),
                     }
                 }
                 None => {
@@ -961,6 +1089,198 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
                     arr.push(a);
                     insert_canonical(table, "task", "assign", value(arr));
                 }
+            }
+            Ok(())
+        }
+        Op::CadenceAdd {
+            id,
+            start,
+            length,
+            count,
+            name,
+            prefix,
+            calendar,
+        } => {
+            let date: toml_edit::Datetime = start.parse().map_err(|_| {
+                op_err(
+                    "E-OPS-04",
+                    format!("`{start}` is not a date like 2027-03-01"),
+                    &[id],
+                )
+            })?;
+            let mut t = new_table();
+            t.insert("id", value(id.as_str()));
+            if let Some(n) = name {
+                t.insert("name", value(n.as_str()));
+            }
+            if let Some(p) = prefix {
+                t.insert("prefix", value(p.as_str()));
+            }
+            t.insert("start", value(date));
+            t.insert("length", value(length.as_str()));
+            t.insert("count", value(i64::from(*count)));
+            if let Some(c) = calendar {
+                t.insert("calendar", value(c.as_str()));
+            }
+            push_top_table(doc, "cadence", id, t)
+        }
+        Op::CadenceRm { id } => {
+            let aot = doc
+                .get_mut("cadence")
+                .and_then(Item::as_array_of_tables_mut);
+            let pos = aot.as_ref().and_then(|a| {
+                a.iter()
+                    .position(|t| t.get("id").and_then(Item::as_str) == Some(id.as_str()))
+            });
+            match (aot, pos) {
+                (Some(a), Some(p)) => {
+                    a.remove(p);
+                    if a.is_empty() {
+                        doc.remove("cadence");
+                    }
+                    Ok(())
+                }
+                _ => Err(op_err(
+                    "E-OPS-02",
+                    format!("no cadence with id `{id}`"),
+                    &[id],
+                )),
+            }
+        }
+        Op::ProjectSet { fields } => {
+            let Some(project) = doc.get_mut("project").and_then(Item::as_table_mut) else {
+                return Err(op_err("E-OPS-04", "the plan has no [project] table", &[]));
+            };
+            for (key, v) in fields {
+                match keys::lookup("project", key) {
+                    Some(def) if !matches!(def.tier, keys::Tier::R(_)) && key != "format" => {}
+                    _ => {
+                        let known: Vec<&str> = keys::keys_of("project")
+                            .filter(|k| !matches!(k.tier, keys::Tier::R(_)) && k.key != "format")
+                            .map(|k| k.key)
+                            .collect();
+                        return Err(op_err(
+                            "E-FMT-02",
+                            format!("`{key}` cannot be set on [project]"),
+                            &[],
+                        )
+                        .with_hint(format!("[project] takes: {}", known.join(", "))));
+                    }
+                }
+                insert_canonical(project, "project", key, to_item(key, v));
+            }
+            Ok(())
+        }
+        Op::CalAdd {
+            id,
+            name,
+            workdays,
+            hours,
+        } => {
+            let mut t = new_table();
+            t.insert("id", value(id.as_str()));
+            if let Some(n) = name {
+                t.insert("name", value(n.as_str()));
+            }
+            let list = |items: &[String]| {
+                let mut a = Array::new();
+                for x in items {
+                    a.push(x.as_str());
+                }
+                value(a)
+            };
+            if let Some(w) = workdays {
+                t.insert("workdays", list(w));
+            }
+            if let Some(h) = hours {
+                t.insert("hours", list(h));
+            }
+            push_top_table(doc, "calendar", id, t)
+        }
+        Op::CalExcept {
+            calendar,
+            name,
+            from,
+            to,
+            working,
+        } => {
+            let date = |d: &str| -> Result<Value, Diagnostic> {
+                d.parse::<toml_edit::Datetime>()
+                    .map(Value::from)
+                    .map_err(|_| {
+                        op_err(
+                            "E-OPS-04",
+                            format!("`{d}` is not a date like 2027-12-15"),
+                            &[calendar],
+                        )
+                    })
+            };
+            let (from, to) = (date(from)?, date(to)?);
+            let cal = doc
+                .get_mut("calendar")
+                .and_then(Item::as_array_of_tables_mut)
+                .and_then(|a| {
+                    a.iter_mut()
+                        .find(|t| t.get("id").and_then(Item::as_str) == Some(calendar.as_str()))
+                })
+                .ok_or_else(|| {
+                    op_err(
+                        "E-OPS-02",
+                        format!("no calendar with id `{calendar}`"),
+                        &[calendar],
+                    )
+                    .with_hint("create it with `alma cal add`")
+                })?;
+            let mut ex = InlineTable::new();
+            ex.insert("name", name.as_str().into());
+            ex.insert("from", from);
+            ex.insert("to", to);
+            ex.insert("working", (*working).into());
+            ex.fmt();
+            match cal.get_mut("exceptions").and_then(Item::as_array_mut) {
+                Some(arr) => {
+                    let same = arr
+                        .iter()
+                        .any(|v| v.to_string().trim() == ex.to_string().trim());
+                    if !same {
+                        push_like_last(arr, ex);
+                    }
+                }
+                None => {
+                    let mut arr = Array::new();
+                    arr.push(ex);
+                    insert_canonical(cal, "calendar", "exceptions", value(arr));
+                }
+            }
+            Ok(())
+        }
+        Op::RuleSet { code, severity } => {
+            if !["off", "info", "warn", "error"].contains(&severity.as_str()) {
+                return Err(op_err(
+                    "E-OPS-04",
+                    format!("severity `{severity}` must be off, info, warn or error"),
+                    &[code],
+                ));
+            }
+            let created = doc.get("rules").is_none();
+            if created {
+                let mut rules = Table::new();
+                rules.set_implicit(true);
+                doc.insert("rules", Item::Table(rules));
+            }
+            let rules = doc["rules"]
+                .as_table_mut()
+                .ok_or_else(|| op_err("E-OPS-04", "`rules` is not a table", &[]))?;
+            let created = created || rules.get("severity").is_none();
+            if rules.get("severity").is_none() {
+                rules.insert("severity", Item::Table(new_table()));
+            }
+            let sev = rules["severity"]
+                .as_table_mut()
+                .ok_or_else(|| op_err("E-OPS-04", "`rules.severity` is not a table", &[]))?;
+            sev.insert(code, value(severity.as_str()));
+            if created {
+                alma_format::place_tables(doc);
             }
             Ok(())
         }
@@ -992,6 +1312,50 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
                 table.remove("assign");
             }
             Ok(())
+        }
+    }
+}
+
+/// Appends a `[[kind]]` table. An identical existing table is a no-op; a different one with the
+/// same id is `E-OPS-01`. Creating the first table of a kind places it in canonical order.
+fn push_top_table(doc: &mut DocumentMut, kind: &str, id: &str, t: Table) -> Result<(), Diagnostic> {
+    let created = doc.get(kind).and_then(Item::as_array_of_tables).is_none();
+    if created {
+        doc.insert(kind, Item::ArrayOfTables(ArrayOfTables::new()));
+    }
+    let aot = doc[kind].as_array_of_tables_mut().expect("just ensured");
+    if let Some(existing) = aot
+        .iter()
+        .find(|r| r.get("id").and_then(Item::as_str) == Some(id))
+    {
+        if existing.to_string() == t.to_string() {
+            return Ok(());
+        }
+        return Err(op_err(
+            "E-OPS-01",
+            format!("{kind} `{id}` already exists with a different definition"),
+            &[id],
+        ));
+    }
+    aot.push(t);
+    if created {
+        alma_format::place_tables(doc);
+    }
+    Ok(())
+}
+
+/// Appends to an inline array using the spacing of its last element, so a multi-line array
+/// stays one element per line.
+fn push_like_last(arr: &mut Array, v: impl Into<Value>) {
+    let decor = arr.iter().last().map(|last| last.decor().clone());
+    arr.push(v);
+    if let (Some(d), Some(new)) = (decor, arr.iter_mut().last()) {
+        let multiline = d
+            .prefix()
+            .and_then(|p| p.as_str())
+            .is_some_and(|p| p.contains('\n'));
+        if multiline {
+            *new.decor_mut() = d;
         }
     }
 }
@@ -1045,6 +1409,36 @@ fn dependents_of(doc: &DocumentMut, ids: &[String]) -> Vec<String> {
         })
         .filter_map(|t| t.get("id").and_then(Item::as_str).map(str::to_string))
         .collect()
+}
+
+/// `alma fmt`: the canonical text of a plan, or the syntax error.
+pub fn fmt_text(src: &str) -> Result<String, Diagnostic> {
+    let out = alma_format::format_text(src).map_err(|e| {
+        op_err(
+            "E-FMT-01",
+            format!("TOML syntax error: {}", e.message()),
+            &[],
+        )
+    })?;
+    // Formatting must never change meaning; refuse rather than write a different plan.
+    let strip = |text: &str| {
+        alma_format::parse(text).plan.map(|mut p| {
+            for t in &mut p.tasks {
+                t.span = None;
+            }
+            p.tasks.sort_by(|a, b| a.id.cmp(&b.id));
+            p
+        })
+    };
+    if strip(src) != strip(&out) {
+        return Err(op_err(
+            "E-OPS-04",
+            "formatting would change the meaning of this plan; it was left untouched",
+            &[],
+        )
+        .with_hint("please report this as a bug, with the file"));
+    }
+    Ok(out)
 }
 
 /// Creates the text of a new plan (`alma init`).
