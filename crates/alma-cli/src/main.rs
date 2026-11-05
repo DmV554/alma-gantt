@@ -13,7 +13,7 @@ use alma_ops::query::{self, ListFilter, Page, TASK_FIELDS};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
-const GUIDE: &str = include_str!("../../../docs/agent-guide.md");
+use alma_ops::files::GUIDE;
 
 #[derive(Parser)]
 #[command(name = "alma", bin_name = "alma", version = alma_ops::VERSION, about = "Gantt planning for agents and humans")]
@@ -535,37 +535,11 @@ fn main() -> ExitCode {
 }
 
 fn resolve_file(file: Option<PathBuf>) -> Result<PathBuf, Usage> {
-    if let Some(f) = file {
-        return Ok(f);
-    }
-    if let Ok(f) = std::env::var("ALMA_FILE") {
-        return Ok(PathBuf::from(f));
-    }
-    let mut found: Vec<PathBuf> = std::fs::read_dir(".")
-        .map_err(|e| Usage(format!("cannot read the current directory: {e}")))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.to_string_lossy().ends_with(".alma.toml"))
-        .collect();
-    found.sort();
-    match found.len() {
-        1 => Ok(found.remove(0)),
-        0 => Err(Usage(
-            "no plan file: pass --file, set ALMA_FILE, or run in a directory with one *.alma.toml"
-                .into(),
-        )),
-        _ => Err(Usage(format!(
-            "several plan files here ({}); pass --file",
-            found
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-    }
+    alma_ops::files::resolve_plan(file.as_deref(), Path::new(".")).map_err(Usage)
 }
 
 fn read(path: &Path) -> Result<String, Usage> {
-    std::fs::read_to_string(path).map_err(|e| Usage(format!("cannot read {}: {e}", path.display())))
+    alma_ops::files::read_text(path).map_err(Usage)
 }
 
 fn print_json<T: Serialize>(v: &T) {
@@ -1185,58 +1159,16 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
     }
 }
 
-/// The text of `path` at a git revision (`git show REV:./PATH`).
 fn git_show(path: &Path, rev: &str) -> Result<String, Usage> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| Usage(format!("{} is not a file name", path.display())))?;
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .arg("show")
-        .arg(format!("{rev}:./{name}"))
-        .output()
-        .map_err(|e| Usage(format!("cannot run git: {e}")))?;
-    if !out.status.success() {
-        return Err(Usage(format!(
-            "git cannot show {name} at {rev}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    String::from_utf8(out.stdout).map_err(|_| Usage("the old version is not UTF-8".into()))
+    alma_ops::files::git_show(path, rev).map_err(Usage)
 }
 
-/// Writes bytes through a temporary file and a rename, like plan writes.
 fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Usage> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let tmp = dir.join(format!(".alma-export-{}.tmp", std::process::id()));
-    std::fs::write(&tmp, bytes)
-        .and_then(|()| std::fs::rename(&tmp, path))
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            Usage(format!("cannot write {}: {e}", path.display()))
-        })
+    alma_ops::files::write_bytes(path, bytes).map_err(Usage)
 }
 
-/// Parses a JSON array of operations, or one operation per line (JSON lines).
 fn parse_ops(text: &str) -> Result<Vec<Op>, String> {
-    let trimmed = text.trim_start();
-    if trimmed.starts_with('[') {
-        return serde_json::from_str(trimmed).map_err(|e| format!("invalid operations: {e}"));
-    }
-    text.lines()
-        .enumerate()
-        .filter(|(_, l)| !l.trim().is_empty())
-        .map(|(n, l)| serde_json::from_str(l).map_err(|e| format!("line {}: {e}", n + 1)))
-        .collect()
+    alma_ops::files::parse_ops(text)
 }
 
 fn mutation(
