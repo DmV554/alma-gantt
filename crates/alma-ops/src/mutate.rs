@@ -933,7 +933,10 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
             }
             let index = insert_index(doc, new_parent.as_deref(), after.as_deref())?;
             let aot = tasks_mut(doc);
-            for (k, t) in tables.into_iter().enumerate() {
+            for (k, mut t) in tables.into_iter().enumerate() {
+                // A table renders at its stored position, not at its index in the array; clear it
+                // so the moved table renders where it now sits, like a new table.
+                t.set_position(None);
                 aot.insert(index + k, t);
             }
             Ok(())
