@@ -463,7 +463,17 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                         format!("milestone `{}` has a duration, effort or assignments; milestones take no time", t.id),
                     );
                 }
-                if t.acceptance.is_none() || t.owner.is_none() {
+                let missing: Vec<&str> = [
+                    (
+                        "an acceptance criterion (`acceptance`)",
+                        t.acceptance.is_none(),
+                    ),
+                    ("an owner (`owner`)", t.owner.is_none()),
+                ]
+                .into_iter()
+                .filter_map(|(k, m)| m.then_some(k))
+                .collect();
+                if !missing.is_empty() {
                     let sev = if t.class == Some(MilestoneClass::Contractual) {
                         W
                     } else {
@@ -474,7 +484,7 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                         i,
                         "L-SCH-02",
                         sev,
-                        format!("milestone `{id}` has no acceptance criterion or owner"),
+                        format!("milestone `{id}` has no {}", missing.join(" and no ")),
                         vec![id.clone()],
                     );
                 }
