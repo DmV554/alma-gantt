@@ -135,6 +135,30 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_units: Option<String>,
     },
+    /// Change a resource: name, kind, rate, capacity or calendar.
+    #[serde(rename = "res.set")]
+    ResSet {
+        /// Id.
+        id: String,
+        /// Name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        /// Rate as `<amount>/<per>`, e.g. `4.2/day`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rate: Option<String>,
+        /// Capacity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_units: Option<String>,
+        /// Calendar id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        calendar: Option<String>,
+        /// Keys to remove: `rate`, `max_units`, `calendar`, `kind`, `name`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unset: Vec<String>,
+    },
     /// Assign a resource to a task (replaces the units of an existing assignment).
     #[serde(rename = "assign")]
     Assign {
@@ -255,6 +279,24 @@ pub struct CriticalChange {
     pub removed: Vec<String>,
 }
 
+fn total_cost(l: &Loaded) -> Option<rust_decimal::Decimal> {
+    match (&l.plan, &l.schedule) {
+        (Some(p), Some(s)) => Some(alma_sched::cost::costs(p, s).total),
+        _ => None,
+    }
+}
+
+fn cost_delta(before: &Loaded, after: &Loaded) -> Option<String> {
+    let d = (total_cost(after)? - total_cost(before)?).round_dp(2);
+    (!d.is_zero()).then(|| {
+        if d.is_sign_positive() {
+            format!("+{d:.2}")
+        } else {
+            format!("{d:.2}")
+        }
+    })
+}
+
 fn critical_set(l: &Loaded) -> Vec<String> {
     match (&l.plan, &l.schedule) {
         (Some(p), Some(s)) => p
@@ -302,6 +344,9 @@ pub struct MutationReport {
     /// Change of the project finish (`+3d`, `-1d`, `0d`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_date_delta: Option<String>,
+    /// Change of the total cost (`+52.00`, `-12.50`); absent when it did not change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_delta: Option<String>,
     /// Tasks that joined or left the critical path; absent when it did not change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub critical_path_changed: Option<CriticalChange>,
@@ -323,6 +368,7 @@ impl MutationReport {
             noop: false,
             changed: Vec::new(),
             end_date_delta: None,
+            cost_delta: None,
             critical_path_changed: None,
             leveling: None,
             new_diagnostics: Vec::new(),
@@ -389,6 +435,7 @@ pub fn apply(src: &str, ops: &[Op], dry_run: bool) -> (Option<String>, MutationR
         noop: text == src,
         changed: moved(&before, &after),
         end_date_delta: end_delta(&before, &after),
+        cost_delta: cost_delta(&before, &after),
         critical_path_changed: critical_change(&before, &after),
         leveling: ops
             .iter()
@@ -654,6 +701,52 @@ fn to_item(key: &str, v: &FieldValue) -> Item {
             value(a)
         }
     }
+}
+
+/// The keys of a resource given on the command line, validated, in canonical order.
+fn resource_items(
+    id: &str,
+    name: &Option<String>,
+    kind: &Option<String>,
+    rate: &Option<String>,
+    max_units: &Option<String>,
+    calendar: &Option<String>,
+) -> Result<Vec<(&'static str, Item)>, Diagnostic> {
+    let mut out = Vec::new();
+    if let Some(n) = name {
+        out.push(("name", value(n.as_str())));
+    }
+    if let Some(k) = kind {
+        out.push(("kind", value(k.as_str())));
+    }
+    if let Some(r) = rate {
+        let (amount, per) = r.split_once('/').ok_or_else(|| {
+            op_err(
+                "E-OPS-04",
+                format!("rate `{r}` must look like 4.2/day"),
+                &[id],
+            )
+        })?;
+        let mut rt = InlineTable::new();
+        rt.insert("amount", amount.into());
+        rt.insert("per", per.into());
+        rt.fmt();
+        out.push(("rate", value(rt)));
+    }
+    if let Some(m) = max_units {
+        let v: Value = m.parse().map_err(|_| {
+            op_err(
+                "E-OPS-04",
+                format!("max_units `{m}` is not a number"),
+                &[id],
+            )
+        })?;
+        out.push(("max_units", Item::Value(v)));
+    }
+    if let Some(c) = calendar {
+        out.push(("calendar", value(c.as_str())));
+    }
+    Ok(out)
 }
 
 /// A `[settings.schedule]` value: the day and week lengths are numbers, the rest strings.
@@ -1098,37 +1191,48 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
         } => {
             let mut t = new_table();
             t.insert("id", value(id.as_str()));
-            if let Some(n) = name {
-                t.insert("name", value(n.as_str()));
-            }
-            if let Some(k) = kind {
-                t.insert("kind", value(k.as_str()));
-            }
-            if let Some(r) = rate {
-                let (amount, per) = r.split_once('/').ok_or_else(|| {
-                    op_err(
-                        "E-OPS-04",
-                        format!("rate `{r}` must look like 4.2/day"),
-                        &[id],
-                    )
-                })?;
-                let mut rt = InlineTable::new();
-                rt.insert("amount", amount.into());
-                rt.insert("per", per.into());
-                rt.fmt();
-                t.insert("rate", value(rt));
-            }
-            if let Some(m) = max_units {
-                let v: Value = m.parse().map_err(|_| {
-                    op_err(
-                        "E-OPS-04",
-                        format!("max_units `{m}` is not a number"),
-                        &[id],
-                    )
-                })?;
-                t.insert("max_units", Item::Value(v));
+            for (k, v) in resource_items(id, name, kind, rate, max_units, &None)? {
+                t.insert(k, v);
             }
             push_top_table(doc, "resource", id, t)
+        }
+        Op::ResSet {
+            id,
+            name,
+            kind,
+            rate,
+            max_units,
+            calendar,
+            unset,
+        } => {
+            let items = resource_items(id, name, kind, rate, max_units, calendar)?;
+            const UNSETTABLE: &[&str] = &["name", "kind", "rate", "max_units", "calendar"];
+            if let Some(bad) = unset.iter().find(|k| !UNSETTABLE.contains(&k.as_str())) {
+                return Err(op_err(
+                    "E-FMT-02",
+                    format!("`{bad}` cannot be unset on a resource"),
+                    &[id],
+                )
+                .with_hint(format!("unset takes: {}", UNSETTABLE.join(", "))));
+            }
+            let table = doc
+                .get_mut("resource")
+                .and_then(Item::as_array_of_tables_mut)
+                .and_then(|aot| {
+                    aot.iter_mut()
+                        .find(|r| r.get("id").and_then(Item::as_str) == Some(id.as_str()))
+                })
+                .ok_or_else(|| {
+                    op_err("E-OPS-02", format!("no resource with id `{id}`"), &[id])
+                        .with_hint("run `alma res ls` to list resources")
+                })?;
+            for k in unset {
+                table.remove(k);
+            }
+            for (k, v) in items {
+                insert_canonical(table, "resource", k, v);
+            }
+            Ok(())
         }
         Op::Assign {
             task,

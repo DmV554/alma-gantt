@@ -45,7 +45,7 @@ Not every field has an effect in M0. Each key belongs to one tier:
 
 | Tier | Meaning | Parser behavior |
 |---|---|---|
-| **A** | Used by the M0 engine or lint | Parsed, validated and used |
+| **A** | Used by the engine, lint or reports | Parsed, validated and used |
 | **B** | Accepted now, used by a later milestone | Parsed, validated (types, references) and preserved; no effect on dates |
 | **R** | Reserved name for a later milestone | Rejected with `E-FMT-05` ("`<key>` is reserved for M<n>, not supported yet") |
 
@@ -125,7 +125,7 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 | `start` | A | date | required | Project start; the forward pass anchor |
 | `calendar` | A | calendar id | built-in `standard` (Mon–Fri, 09:00–13:00 and 14:00–18:00) | Default calendar |
 | `deadline` | A | date | none | Project deadline; the backward pass anchor when `late_anchor = "deadline"` |
-| `currency` | B | string | none | Currency label for money values (`"UF"`, `"USD"`) |
+| `currency` | A | string | none | Currency label for money values (`"UF"`, `"USD"`), shown by cost reports |
 | `description` | B | string | none | Narrative, exported with reports |
 | `status_date`, `estimate_class`, `fx` | R (M4/M2) | | | |
 
@@ -222,8 +222,8 @@ Per-weekday hours and per-resource exceptions are reserved for M2 (keys `week`, 
 ### 6.5 `[[task]]`: resources, cost and metadata
 | # | Key | Tier | Type | Meaning |
 |---|---|---|---|---|
-| 25 | `assign` | A/B | array of `{ resource, units }` | `units` is a fraction of capacity (1 = full time). Used in M0 only by `fixed_effort`/`fixed_units`; histogram and leveling in M2 |
-| 26 | `fixed_cost` | B | table | `{ amount, accrue = start \| prorated \| end, category? }` |
+| 25 | `assign` | A | array of `{ resource, units }` | `units` is a fraction of capacity (1 = full time) for time-rated resources, and a quantity for `per = "use"` rates (20 m of cable, 1 mobilisation). Drives `fixed_effort`, resource usage, leveling and cost |
+| 26 | `fixed_cost` | A | table | `{ amount, accrue = start \| prorated \| end, category? }`. A cost without `category` is `L-COST-01` |
 | 27 | `allow` | A | array of `L-*` codes | Silences those lint rules on this node |
 | 28 | `tags` | B | array of strings | |
 | 29 | `custom` | B | table | Free-form fields (§3.4) |
@@ -233,15 +233,15 @@ Reserved on tasks (R): `actual_start`, `actual_finish`, `remaining`, `physical_p
 `overlap` (M3+); `risk_ref`, `payment`, `payment_ref`, `requirement_refs`, `contract`,
 `account_code`, `org_unit`, `effort_type`, `apportion_to`, `location` (M2+).
 
-### 6.6 `[[resource]]` (tier B)
+### 6.6 `[[resource]]` (tier A)
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `id` | id | required | |
 | `name` | string | id | |
-| `kind` | `work \| equipment \| material \| cost` | `work` | |
-| `rate` | table | none | `{ amount, per = hour \| day \| week \| month \| use }` |
-| `max_units` | number | `1` | Capacity, for leveling (M2) |
-| `calendar` | calendar id | project calendar | |
+| `kind` | `work \| equipment \| material \| cost` | `work` | `work` and `equipment` have a capacity over time (usage, over-allocation, leveling); `material` and `cost` do not |
+| `rate` | table | none | `{ amount, per = hour \| day \| week \| month \| use }`. A time rate costs units × working hours × rate (`1d` = `hours_per_day`, a month = 52/12 weeks); `use` costs units × amount, at the task start (ADR 0012). No rate with assignments is `L-RES-05` |
+| `max_units` | number | `1` | Capacity in units, for over-allocation and leveling (ADR 0011) |
+| `calendar` | calendar id | project calendar | Capacity hours in `alma res usage` |
 
 Reserved (R, M2): `parent`, `category`, `skills`, `org_unit`, `availability`,
 `available_from`, `available_to`, `rates`, `bill_rate`. Assignment keys `work`, `quantity`,

@@ -74,6 +74,40 @@ fn hybrid_terminal_fixture() {
             "leveled {id}"
         );
     }
+    // Costs, by hand: days of work × units × day rate, plus fixed costs (180 + 420 + 260).
+    // pm 40 d × 6 = 240; dev 560 d × 4.2 = 2,352; qa 200 d × 3.6 = 720; fld 175 d × 3.1 =
+    // 542.5. Total 4,714.5 UF. Gate software: 40 d × (3 × 4.2 + 3.6) = 648.
+    assert_eq!(get("gate-sw").cost, 648.0);
+    let c = alma_ops::cost::report(
+        loaded.plan.as_ref().unwrap(),
+        loaded.schedule.as_ref().unwrap(),
+        "resource",
+        1,
+    )
+    .unwrap();
+    let by: Vec<(String, f64, Option<f64>)> = c
+        .rows
+        .iter()
+        .map(|r| (r.id.clone(), r.cost, r.work_h))
+        .collect();
+    assert_eq!(
+        by,
+        [
+            ("pm".to_string(), 240.0, Some(320.0)),
+            ("dev".to_string(), 2352.0, Some(4480.0)),
+            ("qa".to_string(), 720.0, Some(1600.0)),
+            ("fld".to_string(), 542.5, Some(1400.0)),
+        ]
+    );
+    assert_eq!(c.total, 4714.5);
+    let curve = alma_ops::cost::scurve(
+        loaded.plan.as_ref().unwrap(),
+        loaded.schedule.as_ref().unwrap(),
+        "month",
+    )
+    .unwrap();
+    assert_eq!(curve.points.last().unwrap().cumulative, 4714.5);
+    assert_eq!(curve.points.last().unwrap().end, "2027-09-30");
     assert_eq!(get("golive").kind, "summary");
     assert_eq!(get("golive").wbs, "6");
     assert_eq!(get("h4").wbs, "6.2");

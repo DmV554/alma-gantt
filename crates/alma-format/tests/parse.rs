@@ -248,11 +248,7 @@ fn format_doc_matches_key_registry() {
                     .iter()
                     .position(|h| h == "Tier")
                     .map(|i| cells[i].chars().next().unwrap())
-                    .unwrap_or(if *table == "resource" || *table == "cadence" {
-                        'B'
-                    } else {
-                        'A'
-                    });
+                    .unwrap_or(if *table == "cadence" { 'B' } else { 'A' });
                 for key in backticked(&cells[key_col]) {
                     documented.push((table.to_string(), key, tier));
                 }

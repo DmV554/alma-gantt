@@ -16,7 +16,7 @@ claude mcp add alma -- alma --file /path/plan.alma.toml mcp
 ```
 
 Tools mirror the commands below: `check`, `list_tasks`, `show_task`, `critical_path`,
-`explain`, `list_resources`, `resource_usage`, `diff`, `keys`, `render` (returns the chart as
+`explain`, `list_resources`, `resource_usage`, `cost`, `scurve`, `diff`, `keys`, `render` (returns the chart as
 an image), `export`, `init`, `apply`, and one tool per operation (`task_add`, `dep_add`,
 `level`, `settings_set`, …, same fields as `alma schema`). Every tool takes an optional `file`; mutations take `dry_run`.
 
@@ -56,7 +56,8 @@ alma task rm <id> [--cascade]            # refuses if others depend on it
 alma dep add <pred> <succ> [--type FS|SS|FF|SF] [--lag 2d] [--nature discretionary]
                [--rationale "why"]
 alma dep rm <pred> <succ>
-alma res add <id> [--name "..."] [--rate 4.2/day] [--max 3]
+alma res add <id> [--name "..."] [--rate 4.2/day] [--max 3] [--kind equipment]
+alma res set <id> [--rate 5/day] [--max 4] [--calendar ID] [--unset rate]
 alma assign <task> <resource> [--units 0.5]
 alma unassign <task> <resource>
 alma level [--mode leveling|smoothing|off]   # saved in the plan; every schedule is leveled
@@ -80,6 +81,8 @@ alma critical
 alma explain <id>                        # names the resource a leveled task waited for
 alma res ls                              # resources, booked hours, over-allocations
 alma res usage <id> [--period day|week|month]   # demand vs capacity per period
+alma cost [--by wbs|resource|category] [--depth 2]   # what the plan costs, and where
+alma scurve [--period month] [--csv]     # cost per period and cumulative (a forecast)
 alma diff [--rev HEAD | --against old.alma.toml]   # what moved since then
 alma keys [task|project|calendar|resource|cadence|task.deps|task.estimate ...]   # field reference
 alma schema
@@ -91,6 +94,10 @@ alma guide
 - Durations: `15d`, `4h`, `2w`, `30min` in working time (`1d` = 8 working hours by default);
   `3ed`, `2eh` in elapsed time. Lags may be negative (`-2d`, a lead). No months.
 - Dates: `YYYY-MM-DD`.
+- Rates: `AMOUNT/PER` with PER `hour`, `day` (= `hours_per_day`), `week`, `month` (52/12
+  weeks) or `use`. A time rate costs units × working hours; a `use` rate costs units × amount
+  once (a fee, or a quantity × unit price for materials). Fixed costs: `--field
+  fixed_cost.amount=180 --field fixed_cost.accrue=start --field fixed_cost.category=investment`.
 - Ids: lowercase letters, digits and hyphens, unique across the whole plan.
 - `kind`: `task` (default), `milestone`, `loe` (level of effort), `buffer` (time reserve).
   A task with children is a summary; do not give it a `kind`.
@@ -113,6 +120,7 @@ alma guide
 ## Reading results
 
 - Mutations return `changed` (tasks whose dates moved, in working days), `end_date_delta`,
+  `cost_delta` when the total cost changed,
   `critical_path_changed` (`added`, `removed`) when the critical path changed, and
   `new_diagnostics`. `noop: true` means the command was already applied. Changing the leveling
   mode also returns `leveling`: each delayed task, the resource it waited for and the task

@@ -679,3 +679,65 @@ fn settings_set_and_unset() {
     }
     assert_eq!(p.text(), before);
 }
+
+#[test]
+fn costs_and_s_curve() {
+    let p = Plan::new("cost");
+    let (code, v) = p.json(&["cost"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        (v["total"].as_f64(), v["currency"].as_str()),
+        (Some(4714.5), Some("UF"))
+    );
+    assert_eq!(v["rows"].as_array().unwrap().len(), 6, "top-level WBS");
+    let (_, v) = p.json(&["cost", "--by", "category"]);
+    assert_eq!(v["rows"][0]["id"], "investment");
+    let (code, v) = p.json(&["cost", "--by", "colour"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (2, Some("E-CLI-01"))
+    );
+    let (_, v) = p.json(&["scurve", "--period", "month"]);
+    assert_eq!(v["basis"], "forecast");
+    assert_eq!(
+        v["points"].as_array().unwrap().last().unwrap()["cumulative"],
+        4714.5
+    );
+    let out = p.alma(&["scurve", "--csv"]);
+    let csv = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        csv.starts_with("start,end,cost,cumulative\n2027-01-01,2027-01-31,288.00,288.00\n"),
+        "{csv}"
+    );
+    let (_, v) = p.json(&["ls", "--fields", "id,cost", "--limit", "1"]);
+    assert_eq!(v["tasks"][0]["cost"], 432.0);
+
+    // Raising a rate is previewed, then applied; the same command again is a no-op.
+    let before = p.text();
+    let (code, v) = p.json(&["res", "set", "dev", "--rate", "5/day", "--dry-run"]);
+    assert_eq!((code, v["dry_run"].as_bool()), (0, Some(true)), "{v}");
+    // 560 developer-days × 0.8 more per day.
+    assert_eq!(v["cost_delta"], "+448.00");
+    assert_eq!(p.text(), before);
+    let (code, _) = p.json(&["res", "set", "dev", "--rate", "5/day"]);
+    assert_eq!(code, 0);
+    assert_eq!(changed_lines(&before, &p.text()), 1);
+    let (_, v) = p.json(&["cost", "--by", "resource"]);
+    assert_eq!(v["rows"][1]["cost"], 2800.0);
+    let (code, v) = p.json(&["res", "set", "dev", "--rate", "5/day"]);
+    assert_eq!((code, v["noop"].as_bool()), (0, Some(true)));
+    // Removing the rate leaves the cost at zero and says so.
+    let (code, v) = p.json(&["res", "set", "pm", "--unset", "rate"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["new_diagnostics"][0]["code"], "L-RES-05");
+    let (code, v) = p.json(&["res", "set", "nobody", "--rate", "1/day"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-02"))
+    );
+    let (code, v) = p.json(&["res", "set", "dev", "--unset", "id"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-FMT-02"))
+    );
+}

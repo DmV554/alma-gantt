@@ -174,6 +174,9 @@ fn op_description(op: &str) -> &'static str {
         }
         "dep.rm" => "Remove the dependency pred → succ.",
         "res.add" => "Add a resource (rate as AMOUNT/PER, e.g. 4.2/day; max_units).",
+        "res.set" => {
+            "Change a resource: rate (AMOUNT/PER, PER is hour, day, week, month or use), max_units, kind, name, calendar; `unset` removes keys."
+        }
         "assign" => "Assign a resource to a task with units (1 = full time).",
         "unassign" => "Remove an assignment.",
         "cadence.add" => "Add a sprint cadence: COUNT equal iterations from START, ids <prefix>01…",
@@ -258,6 +261,25 @@ pub fn tools() -> Vec<Tool> {
                     "cursor": { "type": "string" },
                 }),
                 &["id"],
+            ),
+        )),
+        read_only(Tool::new(
+            "cost",
+            "Cost of the current schedule (units × working hours × rate + per-use + fixed costs), grouped by WBS branch, resource or category, with each row's share of the total.",
+            schema(
+                json!({
+                    "by": { "enum": ["wbs", "resource", "category"], "description": "Default wbs" },
+                    "depth": { "type": "integer", "minimum": 1, "description": "Deepest WBS level with by=wbs (default 1)" },
+                }),
+                &[],
+            ),
+        )),
+        read_only(Tool::new(
+            "scurve",
+            "Cost per period and cumulative for the current schedule (a forecast curve; planned value needs a baseline).",
+            schema(
+                json!({ "period": { "enum": ["day", "week", "month"], "description": "Default month" } }),
+                &[],
             ),
         )),
         read_only(Tool::new(
@@ -528,6 +550,22 @@ impl AlmaServer {
                     out["next_cursor"] = n.into();
                 }
                 Outcome::ok(out)
+            }
+            "cost" => {
+                let (_, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let by = str_arg(args, "by").unwrap_or("wbs");
+                let depth = usize_arg(args, "depth").unwrap_or(1);
+                let r = alma_ops::cost::report(plan, s, by, depth)
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                Outcome::from(&r, false)
+            }
+            "scurve" => {
+                let (_, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let r = alma_ops::cost::scurve(plan, s, str_arg(args, "period").unwrap_or("month"))
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                Outcome::from(&r, false)
             }
             "diff" => {
                 let path = self.plan_path(args)?;

@@ -2,6 +2,7 @@
 //! costs, earned value and diagnostics. Pure functions over `alma-core` (SPEC.md §7).
 
 pub mod calendar;
+pub mod cost;
 pub mod cpm;
 mod level;
 pub mod lint;

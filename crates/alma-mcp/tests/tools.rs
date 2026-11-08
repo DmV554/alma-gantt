@@ -52,6 +52,9 @@ fn every_tool_has_a_standalone_object_schema() {
         "settings_set",
         "list_resources",
         "resource_usage",
+        "res_set",
+        "cost",
+        "scurve",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
@@ -177,6 +180,17 @@ fn resources_and_leveling() {
     assert!(!r.is_error, "{}", r.json);
     assert_eq!(r.json["leveling"]["mode"], "smoothing");
     assert!(d.text().contains("leveling = \"smoothing\""));
+
+    let r = s.call("cost", &args(json!({ "by": "resource" })));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["total"], 4714.5);
+    let r = s.call("scurve", &args(json!({ "period": "week" })));
+    assert_eq!(r.json["basis"], "forecast");
+    let r = s.call(
+        "res_set",
+        &args(json!({ "id": "dev", "rate": "5/day", "dry_run": true })),
+    );
+    assert!(!r.is_error, "{}", r.json);
 }
 
 #[test]

@@ -35,13 +35,13 @@ macro_rules! keys {
 /// Every key, grouped by table. Order inside a table is the canonical key order.
 pub const KEYS: &[KeyDef] = keys! {
     "top" => [
-        "project": A, "settings": A, "rules": A, "calendar": A, "resource": B, "cadence": B,
+        "project": A, "settings": A, "rules": A, "calendar": A, "resource": A, "cadence": B,
         "task": A, "release": R("M4"), "reserve": R("M2"), "risk": R("M2"), "funding": R("M2"),
         "contract": R("M3"), "scenario": R("M2"), "cashflow_item": R("M2"),
         "baseline": R("M2"), "ucp": R("a later milestone"),
     ],
     "project" => [
-        "format": A, "name": A, "start": A, "calendar": A, "deadline": A, "currency": B,
+        "format": A, "name": A, "start": A, "calendar": A, "deadline": A, "currency": A,
         "description": B, "status_date": R("M4"), "estimate_class": R("M2"), "fx": R("M2"),
     ],
     "settings" => ["schedule": A, "cost": R("M2")],
@@ -63,7 +63,7 @@ pub const KEYS: &[KeyDef] = keys! {
         "owner": A, "description": B, "deliverable": B, "acceptance": A, "excludes": B,
         "assumptions": B, "references": B, "sched_type": A, "duration": A, "effort": A,
         "estimate": A, "calendar": A, "constraint": A, "deadline": A, "spans": A, "reserve": A,
-        "deps": A, "assign": A, "fixed_cost": B, "allow": A, "tags": B, "custom": B,
+        "deps": A, "assign": A, "fixed_cost": A, "allow": A, "tags": B, "custom": B,
         "actual_start": R("M4"), "actual_finish": R("M4"), "remaining": R("M4"),
         "physical_pct": R("M4"), "progress_rule": R("M4"), "ev_method": R("M4"),
         "points": R("M4"), "iteration": R("M4"), "crash": R("M3"), "overlap": R("M3"),
@@ -85,7 +85,7 @@ pub const KEYS: &[KeyDef] = keys! {
     ],
     "task.fixed_cost" => ["amount": B, "accrue": B, "category": B],
     "resource" => [
-        "id": B, "name": B, "kind": B, "rate": B, "max_units": B, "calendar": B,
+        "id": A, "name": A, "kind": A, "rate": A, "max_units": A, "calendar": A,
         "parent": R("M2"), "category": R("M2"), "skills": R("M2"), "org_unit": R("M2"),
         "availability": R("M2"), "available_from": R("M2"), "available_to": R("M2"),
         "rates": R("M2"), "bill_rate": R("M2"),

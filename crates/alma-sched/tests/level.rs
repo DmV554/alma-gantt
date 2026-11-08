@@ -72,7 +72,7 @@ fn codes(p: &Plan) -> Vec<(&'static str, Severity)> {
     let s = schedule(p).unwrap();
     lint(p, Some(&s))
         .into_iter()
-        .filter(|d| d.code.starts_with("L-RES"))
+        .filter(|d| matches!(d.code, "L-RES-01" | "L-RES-02"))
         .map(|d| (d.code, d.severity))
         .collect()
 }
@@ -324,5 +324,35 @@ proptest! {
     fn leveling_is_deterministic(p in arb_plan()) {
         let q = leveled(p, Leveling::Leveling);
         prop_assert_eq!(schedule(&q).unwrap(), schedule(&q).unwrap());
+    }
+}
+
+/// Leveling is not in SPEC §12's 50 ms budget (that is for logic-only scheduling), but it must
+/// stay interactive on big plans: 5,000 tasks over 5 resources in well under a second in release.
+#[test]
+fn leveling_5000_tasks_stays_interactive() {
+    let names = ["a", "b", "c", "d", "e"];
+    let mut tasks = Vec::with_capacity(5000);
+    for i in 0..5000 {
+        let r = names[i % 5];
+        let deps: Vec<String> = if i >= 25 {
+            vec![format!("t{}", i - 25)]
+        } else {
+            Vec::new()
+        };
+        let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+        tasks.push(task(&format!("t{i}"), (i % 4 + 1) as i64, &deps, &[(r, 1)]));
+    }
+    let p = leveled(
+        plan(tasks, &[("a", 3), ("b", 3), ("c", 3), ("d", 3), ("e", 3)]),
+        Leveling::Leveling,
+    );
+    let start = std::time::Instant::now();
+    let s = schedule(&p).unwrap();
+    let elapsed = start.elapsed();
+    assert!(overloads(&p, &s).is_empty());
+    eprintln!("leveled 5000 tasks in {elapsed:?}");
+    if !cfg!(debug_assertions) {
+        assert!(elapsed.as_millis() < 1000, "took {elapsed:?}");
     }
 }

@@ -46,6 +46,7 @@ pub const RULES: &[Rule] = &[
         Some(W),
         "Calendar working day differs from hours_per_day",
     ),
+    rule("L-COST-01", Some(W), "Fixed cost without a category"),
     rule(
         "L-COST-02",
         Some(E),
@@ -110,6 +111,11 @@ pub const RULES: &[Rule] = &[
         "L-RES-02",
         Some(W),
         "Smoothing left an over-allocation it could not resolve within free float",
+    ),
+    rule(
+        "L-RES-05",
+        Some(W),
+        "Resource with assignments but no rate (its cost counts as zero)",
     ),
     rule(
         "L-SCH-01",
@@ -753,6 +759,51 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                     vec![id.clone()],
                 );
             }
+        }
+    }
+
+    // Costs (F-COST-07).
+    for res in &plan.resources {
+        if res.rate.is_some() {
+            continue;
+        }
+        let tasks: Vec<String> = plan
+            .tasks
+            .iter()
+            .filter(|t| t.assign.iter().any(|a| a.resource == res.id))
+            .map(|t| t.id.clone())
+            .collect();
+        if tasks.is_empty() {
+            continue;
+        }
+        let msg = format!(
+            "`{}` is assigned to {} but has no rate, so its cost counts as zero",
+            res.id,
+            tasks.join(", ")
+        );
+        let before = l.out.len();
+        l.report(usize::MAX, "L-RES-05", W, msg, vec![res.id.clone()]);
+        if l.out.len() > before
+            && let Some((_, d)) = l.out.last_mut()
+        {
+            *d = d.clone().with_hint(format!(
+                "set it with `alma res set {} --rate AMOUNT/day` (or /hour, /week, /month, /use)",
+                res.id
+            ));
+        }
+    }
+    for (i, t) in plan.tasks.iter().enumerate() {
+        if let Some(fc) = &t.fixed_cost
+            && fc.category.is_none()
+        {
+            l.on(
+                i,
+                "L-COST-01",
+                format!(
+                    "fixed cost of `{}` has no category, so cost and cash-flow reports cannot group it",
+                    t.id
+                ),
+            );
         }
     }
 

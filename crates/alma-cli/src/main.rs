@@ -145,6 +145,24 @@ enum Cmd {
         #[arg(long)]
         font_size: Option<f64>,
     },
+    /// Cost of the current schedule, by WBS branch, resource or category.
+    Cost {
+        /// wbs, resource or category.
+        #[arg(long, default_value = "wbs")]
+        by: String,
+        /// Deepest WBS level listed with --by wbs.
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+    },
+    /// Cost per period and cumulative (the S-curve of the current schedule, a forecast).
+    Scurve {
+        /// day, week or month.
+        #[arg(long, default_value = "month")]
+        period: String,
+        /// Print CSV instead of a table.
+        #[arg(long)]
+        csv: bool,
+    },
     /// Rewrite the plan in canonical layout (key order, WBS order, spacing); comments are kept.
     Fmt {
         /// Only report whether the file is formatted (exit 1 if not).
@@ -443,6 +461,31 @@ enum ResCmd {
         #[command(flatten)]
         m: MutArgs,
     },
+    /// Change a resource (rate, capacity, kind, name, calendar).
+    Set {
+        /// Resource id.
+        id: String,
+        /// Name.
+        #[arg(long)]
+        name: Option<String>,
+        /// work, equipment, material or cost.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Rate as AMOUNT/PER, e.g. 4.2/day (PER: hour, day, week, month, use).
+        #[arg(long)]
+        rate: Option<String>,
+        /// Capacity in units.
+        #[arg(long = "max")]
+        max_units: Option<String>,
+        /// Calendar id.
+        #[arg(long)]
+        calendar: Option<String>,
+        /// Remove a key: rate, max_units, calendar, kind or name (repeatable).
+        #[arg(long)]
+        unset: Vec<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
     /// List resources with their assigned tasks, booked hours and over-allocations.
     Ls,
     /// Demand vs capacity of one resource per period, and where it is over-allocated.
@@ -690,6 +733,7 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                     println!("  float     total {tf}d, free {}d", v.ff.unwrap_or(0.0));
                 }
                 println!("  critical  {}", v.critical);
+                println!("  cost      {:.2}", v.cost);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -887,6 +931,88 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             m.dry_run,
             json,
         ),
+        Cmd::Res(ResCmd::Set {
+            id,
+            name,
+            kind,
+            rate,
+            max_units,
+            calendar,
+            unset,
+            m,
+        }) => mutation(
+            file,
+            &[Op::ResSet {
+                id,
+                name,
+                kind,
+                rate,
+                max_units,
+                calendar,
+                unset,
+            }],
+            m.dry_run,
+            json,
+        ),
+        Cmd::Cost { by, depth } => {
+            let (_, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let r = alma_ops::cost::report(
+                l.plan.as_ref().unwrap(),
+                l.schedule.as_ref().unwrap(),
+                &by,
+                depth,
+            )
+            .map_err(Usage)?;
+            if json {
+                print_json(&r);
+            } else {
+                let cur = r.currency.clone().unwrap_or_default();
+                for row in &r.rows {
+                    let label = row.wbs.clone().map(|w| format!("{w} ")).unwrap_or_default();
+                    let work = row.work_h.map(|h| format!("\t{h} h")).unwrap_or_default();
+                    println!(
+                        "{label}{}\t{:.2} {cur}\t{:.1}%{work}",
+                        row.id, row.cost, row.pct
+                    );
+                }
+                println!("total: {:.2} {cur}", r.total);
+                if !r.unpriced.is_empty() {
+                    println!("no rate (cost 0): {}", r.unpriced.join(", "));
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Scurve { period, csv } => {
+            let (_, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let r = alma_ops::cost::scurve(
+                l.plan.as_ref().unwrap(),
+                l.schedule.as_ref().unwrap(),
+                &period,
+            )
+            .map_err(Usage)?;
+            if json {
+                print_json(&r);
+            } else if csv {
+                print!("{}", alma_ops::cost::scurve_csv(&r));
+            } else {
+                let cur = r.currency.clone().unwrap_or_default();
+                println!("{} per {} ({cur})", r.basis, r.period);
+                for p in &r.points {
+                    println!(
+                        "{}..{}\t{:>12.2}\t{:>12.2}",
+                        p.start, p.end, p.cost, p.cumulative
+                    );
+                }
+                println!("total: {:.2} {cur}", r.total);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Res(ResCmd::Ls) => {
             let (_, l) = loaded(file)?;
             if let Some(code) = scheduled(&l) {
@@ -1358,6 +1484,9 @@ fn print_mutation(r: &MutationReport) {
     }
     if let Some(d) = &r.end_date_delta {
         println!("project finish: {d}");
+    }
+    if let Some(c) = &r.cost_delta {
+        println!("total cost: {c}");
     }
     if let Some(c) = &r.critical_path_changed {
         if !c.added.is_empty() {

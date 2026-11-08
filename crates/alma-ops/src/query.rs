@@ -119,6 +119,8 @@ pub struct TaskView {
     pub ff: Option<f64>,
     /// On the critical set.
     pub critical: bool,
+    /// Cost of the task and its descendants, in project currency (F-COST-07), rounded to cents.
+    pub cost: f64,
 }
 
 impl TaskView {
@@ -132,7 +134,7 @@ impl TaskView {
 /// Every field name `TaskView` has.
 pub const TASK_FIELDS: &[&str] = &[
     "id", "name", "wbs", "parent", "kind", "wbs_role", "duration", "start", "finish", "es", "ef",
-    "ls", "lf", "tf", "ff", "critical",
+    "ls", "lf", "tf", "ff", "critical", "cost",
 ];
 
 pub use alma_layout::wbs_codes;
@@ -144,6 +146,7 @@ pub fn task_views(plan: &Plan, schedule: &Schedule) -> Vec<TaskView> {
     let units = plan.settings.units;
     let day = units.minutes_per_day as f64;
     let cals = Calendars::new(plan);
+    let costs = alma_sched::cost::costs(plan, schedule);
     plan.tasks
         .iter()
         .enumerate()
@@ -182,6 +185,7 @@ pub fn task_views(plan: &Plan, schedule: &Schedule) -> Vec<TaskView> {
                 tf: d.total_float.map(round),
                 ff: d.free_float.map(round),
                 critical: d.critical,
+                cost: crate::cost::money(costs.task_total[i]),
             }
         })
         .collect()
