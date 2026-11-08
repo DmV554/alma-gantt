@@ -953,3 +953,36 @@ fn reserves_and_the_cost_stack() {
         (1, Some("E-OPS-02"))
     );
 }
+
+#[test]
+fn histogram_and_s_curve_charts() {
+    let p = Plan::new("charts");
+    let out = p.dir.join("hist.png");
+    let (code, v) = p.json(&[
+        "export",
+        out.to_str().unwrap(),
+        "--chart",
+        "histogram",
+        "--resource",
+        "dev",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(&std::fs::read(&out).unwrap()[..4], b"\x89PNG");
+    let svg = p.alma(&["export", "-", "--chart", "scurve", "--period", "week"]);
+    let svg = String::from_utf8(svg.stdout).unwrap();
+    assert!(svg.starts_with("<svg") && svg.contains("S-curve"), "{svg}");
+    // A histogram needs a resource, and says which ones exist.
+    let (code, v) = p.json(&["export", "-", "--chart", "histogram"]);
+    assert_eq!(code, 2);
+    assert!(v["errors"][0]["message"].as_str().unwrap().contains("dev"));
+    let (code, _) = p.json(&["export", "-", "--chart", "pie"]);
+    assert_eq!(code, 2);
+    // With a baseline, the S-curve draws planned value too.
+    p.json(&["baseline", "save", "b1", "--date", "2026-12-15"]);
+    let svg = p.alma(&["export", "-", "--chart", "scurve"]);
+    assert!(
+        String::from_utf8(svg.stdout)
+            .unwrap()
+            .contains("planned value (b1)")
+    );
+}

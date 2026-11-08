@@ -117,8 +117,9 @@ enum Cmd {
         #[command(flatten)]
         m: MutArgs,
     },
-    /// Export the Gantt chart (.svg, .png) or the task table (.csv); `-` writes SVG or CSV
-    /// to stdout. `render` is an alias.
+    /// Export a chart (.svg, .png) or the task table (.csv); `-` writes SVG or CSV to stdout.
+    /// Charts: the Gantt chart (default), a resource histogram, the S-curve. `render` is an
+    /// alias.
     #[command(alias = "render")]
     Export {
         /// Output file; the extension picks the format unless --format is given.
@@ -126,6 +127,18 @@ enum Cmd {
         /// svg, png or csv.
         #[arg(long)]
         format: Option<String>,
+        /// gantt, histogram (needs --resource) or scurve.
+        #[arg(long)]
+        chart: Option<String>,
+        /// Resource id, for --chart histogram.
+        #[arg(long)]
+        resource: Option<String>,
+        /// day, week or month, for histogram (default week) and scurve (default month).
+        #[arg(long)]
+        period: Option<String>,
+        /// Baseline for the planned value line of the S-curve (default: the active one).
+        #[arg(long)]
+        baseline: Option<String>,
         /// Time range, e.g. 2027-01..2027-06 or 2027-01-04..2027-03-31.
         #[arg(long)]
         range: Option<String>,
@@ -1376,6 +1389,10 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
         Cmd::Export {
             out,
             format,
+            chart,
+            resource,
+            period,
+            baseline,
             range,
             depth,
             scale,
@@ -1383,11 +1400,16 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             no_arrows,
             font_size,
         } => {
-            let (_, l) = loaded(file)?;
+            let (path, l) = loaded(file)?;
             if let Some(code) = scheduled(&l) {
                 return Ok(code);
             }
             let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+            let baseline = if chart.as_deref() == Some("scurve") {
+                alma_ops::baseline::snapshot_for(plan, &path, baseline.as_deref()).map_err(Usage)?
+            } else {
+                None
+            };
             let format = format.unwrap_or_else(|| {
                 out.extension()
                     .and_then(|e| e.to_str())
@@ -1401,6 +1423,10 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 dark,
                 no_arrows,
                 font_size,
+                chart,
+                resource,
+                period,
+                baseline,
             };
             let bytes: Vec<u8> = match format.as_str() {
                 "svg" => alma_ops::export::svg(plan, s, &req)

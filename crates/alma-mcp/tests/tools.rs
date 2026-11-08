@@ -258,6 +258,14 @@ fn render_returns_an_image() {
     let v = serde_json::to_value(&result).unwrap();
     assert_eq!(v["content"][1]["type"], "image");
     assert_eq!(v["content"][1]["mimeType"], "image/png");
+    let hist = s.call(
+        "render",
+        &args(json!({ "chart": "histogram", "resource": "fld", "period": "month" })),
+    );
+    assert!(!hist.is_error, "{}", hist.json);
+    assert!(hist.png.is_some());
+    let bad = s.call("render", &args(json!({ "chart": "histogram" })));
+    assert!(bad.is_error);
     let svg = s.call("render", &args(json!({ "format": "svg" })));
     assert!(svg.json["svg"].as_str().unwrap().starts_with("<svg"));
 }

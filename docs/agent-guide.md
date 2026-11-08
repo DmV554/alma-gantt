@@ -16,10 +16,11 @@ claude mcp add alma -- alma --file /path/plan.alma.toml mcp
 ```
 
 Tools mirror the commands below: `check`, `list_tasks`, `show_task`, `critical_path`,
-`explain`, `list_resources`, `resource_usage`, `cost`, `scurve`, `baseline_list`,
-`variance`, `baseline_save`, `diff`, `keys`, `render` (returns the chart as
-an image), `export`, `init`, `apply`, and one tool per operation (`task_add`, `dep_add`,
-`level`, `settings_set`, …, same fields as `alma schema`). Every tool takes an optional `file`; mutations take `dry_run`.
+`explain`, `list_resources`, `resource_usage`, `cost`, `scurve`, `baseline_list`, `variance`,
+`baseline_save`, `diff`, `keys`, `render` (returns a chart as an image: the Gantt chart,
+`chart: "histogram"` with a `resource`, or `chart: "scurve"`), `export`, `init`, `apply`, and
+one tool per operation (`task_add`, `dep_add`, `level`, `settings_set`, `reserve_add`, …, same
+fields as `alma schema`). Every tool takes an optional `file`; mutations take `dry_run`.
 
 ## Recommended loop
 
@@ -78,6 +79,8 @@ alma fmt [--check]                       # canonical layout; comments kept
 
 alma export gantt.png [--range 2027-01..2027-06] [--depth 2] [--scale week] [--dark]
 alma export gantt.svg | plan.csv | - --format csv
+alma export dev.png --chart histogram --resource dev [--period week]   # demand vs capacity
+alma export curve.png --chart scurve [--period month] [--baseline b1]  # forecast vs planned
 
 alma check [--min warn] [--limit N --cursor C]
 alma ls [--parent P] [--critical] [--kind milestone] [--fields id,name,start,finish,tf]

@@ -87,6 +87,20 @@ pub fn pick<'a>(plan: &'a Plan, id: Option<&str>) -> Result<&'a str, String> {
     }
 }
 
+/// The snapshot to compare with: the named baseline, else the active one; `None` when no id is
+/// given and no baseline is active.
+pub fn snapshot_for(
+    plan: &Plan,
+    plan_path: &Path,
+    id: Option<&str>,
+) -> Result<Option<Snapshot>, String> {
+    if id.is_none() && !plan.baselines.iter().any(|b| b.active) {
+        return Ok(None);
+    }
+    let id = pick(plan, id)?;
+    read_snapshot(plan_path, id).map(Some)
+}
+
 /// What a saved baseline froze.
 #[derive(Debug, Clone, Serialize)]
 pub struct SavedView {

@@ -29,8 +29,10 @@ tool, with agents doing most of the planning and humans able to edit anything by
 - Also done: `alma fmt`, `alma diff`, calendar/project/rule/cadence commands, `alma keys`, and
   the M0 acceptance test: a recorded agent session (`crates/alma-cli/tests/acceptance/`) that
   built the hybrid plan from a written brief using only `alma guide`, replayed in CI.
-- Known gaps, by design until later milestones: funding limits, risks, histogram and S-curve
-  charts, XLSX export (rest of M2); progress, earned value and linking tasks to sprints (M4);
+- Charts: the resource histogram and the S-curve render through the same display list as the
+  Gantt chart (`alma export --chart histogram|scurve`, MCP `render`).
+- Known gaps, by design until later milestones: funding limits, risks, XLSX export and
+  resource calendars combined with task calendars (rest of M2); progress, earned value and linking tasks to sprints (M4);
   text widths are estimated (ADR 0009).
 - `docs/format.md` is the normative reference for plan files (ADRs 0005–0008). Read it before
   touching `alma-format` or the model.

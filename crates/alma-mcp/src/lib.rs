@@ -342,9 +342,13 @@ pub fn tools() -> Vec<Tool> {
         )),
         read_only(Tool::new(
             "render",
-            "Render the Gantt chart and return it as an image (PNG) so you can look at it, or as SVG text.",
+            "Render a chart and return it as an image (PNG) so you can look at it, or as SVG text: the Gantt chart (default), a resource histogram (demand vs capacity) or the S-curve (forecast and planned value).",
             schema(
                 json!({
+                    "chart": { "enum": ["gantt", "histogram", "scurve"], "description": "Default gantt" },
+                    "resource": { "type": "string", "description": "Resource id, for histogram" },
+                    "period": { "enum": ["day", "week", "month"], "description": "histogram (default week) and scurve (default month)" },
+                    "baseline": { "type": "string", "description": "scurve: baseline for planned value (default the active one)" },
                     "format": { "enum": ["png", "svg"], "description": "Default png" },
                     "range": { "type": "string", "description": "e.g. 2027-01..2027-06" },
                     "depth": { "type": "integer", "minimum": 1 },
@@ -356,10 +360,14 @@ pub fn tools() -> Vec<Tool> {
         )),
         Tool::new(
             "export",
-            "Write the chart (.svg, .png) or the task table (.csv) to a file.",
+            "Write a chart (.svg, .png: gantt, histogram or scurve) or the task table (.csv) to a file.",
             schema(
                 json!({
                     "out": { "type": "string" },
+                    "chart": { "enum": ["gantt", "histogram", "scurve"] },
+                    "resource": { "type": "string" },
+                    "period": { "enum": ["day", "week", "month"] },
+                    "baseline": { "type": "string" },
                     "range": { "type": "string" },
                     "depth": { "type": "integer", "minimum": 1 },
                     "scale": { "enum": ["day", "week", "month"] },
@@ -478,15 +486,30 @@ impl AlmaServer {
         }
     }
 
-    fn render_request(args: &JsonObject) -> RenderRequest {
-        RenderRequest {
+    fn render_request(
+        args: &JsonObject,
+        plan: &alma_ops::Plan,
+        path: &Path,
+    ) -> Result<RenderRequest, Outcome> {
+        let chart = str_arg(args, "chart").map(str::to_string);
+        let baseline = if chart.as_deref() == Some("scurve") {
+            alma_ops::baseline::snapshot_for(plan, path, str_arg(args, "baseline"))
+                .map_err(|m| Outcome::error("E-CLI-01", m))?
+        } else {
+            None
+        };
+        Ok(RenderRequest {
             range: str_arg(args, "range").map(str::to_string),
             depth: usize_arg(args, "depth"),
             scale: str_arg(args, "scale").map(str::to_string),
             dark: bool_arg(args, "dark"),
             no_arrows: false,
             font_size: None,
-        }
+            chart,
+            resource: str_arg(args, "resource").map(str::to_string),
+            period: str_arg(args, "period").map(str::to_string),
+            baseline,
+        })
     }
 
     /// Runs a tool. Synchronous and transport-free, so it is easy to test.
@@ -706,9 +729,9 @@ impl AlmaServer {
                 }
             }
             "render" => {
-                let (_, l) = self.scheduled(args)?;
+                let (path, l) = self.scheduled(args)?;
                 let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
-                let req = Self::render_request(args);
+                let req = Self::render_request(args, plan, &path)?;
                 let warnings = alma_ops::export::warnings(plan, s, &req)
                     .map_err(|m| Outcome::error("E-CLI-01", m))?;
                 match str_arg(args, "format").unwrap_or("png") {
@@ -733,7 +756,7 @@ impl AlmaServer {
                 }
             }
             "export" => {
-                let (_, l) = self.scheduled(args)?;
+                let (path, l) = self.scheduled(args)?;
                 let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
                 let out = self
                     .path_arg(args, "out")
@@ -743,7 +766,7 @@ impl AlmaServer {
                     .and_then(|e| e.to_str())
                     .unwrap_or("svg")
                     .to_ascii_lowercase();
-                let req = Self::render_request(args);
+                let req = Self::render_request(args, plan, &path)?;
                 let bytes = match format.as_str() {
                     "svg" => alma_ops::export::svg(plan, s, &req).map(String::into_bytes),
                     "png" => alma_ops::export::png(plan, s, &req),

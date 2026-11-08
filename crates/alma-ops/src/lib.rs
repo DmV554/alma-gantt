@@ -15,7 +15,7 @@ pub mod schema;
 pub use alma_format::keys;
 
 pub use alma_core::diag::{Diagnostic, Severity};
-use alma_core::model::Plan;
+pub use alma_core::model::Plan;
 use alma_sched::Schedule;
 use serde::Serialize;
 
