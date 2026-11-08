@@ -174,6 +174,9 @@ fn op_description(op: &str) -> &'static str {
         }
         "dep.rm" => "Remove the dependency pred → succ.",
         "res.add" => "Add a resource (rate as AMOUNT/PER, e.g. 4.2/day; max_units).",
+        "res.set" => {
+            "Change a resource: rate (AMOUNT/PER, PER is hour, day, week, month or use), max_units, kind, name, calendar; `unset` removes keys."
+        }
         "assign" => "Assign a resource to a task with units (1 = full time).",
         "unassign" => "Remove an assignment.",
         "cadence.add" => "Add a sprint cadence: COUNT equal iterations from START, ids <prefix>01…",
@@ -182,6 +185,16 @@ fn op_description(op: &str) -> &'static str {
         "cal.add" => "Add a working calendar (workdays, hours like 09:00-13:00).",
         "cal.except" => "Add a holiday or blackout period to a calendar (dates inclusive).",
         "rule.set" => "Set a lint rule's severity for this plan (off, info, warn, error).",
+        "reserve.add" => {
+            "Add a cost reserve: kind `contingency` (identified risks; inside the cost baseline, accrues at the finish of its scope) or `management` (the unforeseen; outside the baseline, inside the budget). Give a `basis`."
+        }
+        "reserve.rm" => "Remove a cost reserve.",
+        "level" => {
+            "Resolve resource over-allocation: mode `leveling` delays tasks until their resources fit (the finish may move), `smoothing` only within free float, `off` turns it off. Saved in the plan; the result lists delayed tasks and what each waits for."
+        }
+        "settings.set" => {
+            "Set or unset scheduling settings ([settings.schedule]): hours_per_day, days_per_week, late_anchor, critical_threshold, near_critical, phase, leveling, …"
+        }
         _ => "Plan operation.",
     }
 }
@@ -237,6 +250,81 @@ pub fn tools() -> Vec<Tool> {
             schema(json!({ "id": { "type": "string" } }), &["id"]),
         )),
         read_only(Tool::new(
+            "list_resources",
+            "Resources with their kind, capacity, rate, assigned tasks, booked hours and how many over-allocated stretches each has.",
+            schema(json!({}), &[]),
+        )),
+        read_only(Tool::new(
+            "resource_usage",
+            "Demand vs capacity of one resource per period (hours), and the exact stretches where it is over-allocated with the competing tasks. Use it to check a fix.",
+            schema(
+                json!({
+                    "id": { "type": "string", "description": "Resource id" },
+                    "period": { "enum": ["day", "week", "month"], "description": "Default week" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "cursor": { "type": "string" },
+                }),
+                &["id"],
+            ),
+        )),
+        read_only(Tool::new(
+            "cost",
+            "Cost of the current schedule (units × working hours × rate + per-use + fixed costs), grouped by WBS branch, resource or category, with each row's share of the total.",
+            schema(
+                json!({
+                    "by": { "enum": ["wbs", "resource", "category"], "description": "Default wbs" },
+                    "depth": { "type": "integer", "minimum": 1, "description": "Deepest WBS level with by=wbs (default 1)" },
+                }),
+                &[],
+            ),
+        )),
+        read_only(Tool::new(
+            "scurve",
+            "Cost per period and cumulative for the current schedule (a forecast), with planned value (pv) from the active baseline when there is one.",
+            schema(
+                json!({
+                    "period": { "enum": ["day", "week", "month"], "description": "Default month" },
+                    "baseline": { "type": "string", "description": "Baseline for pv (default: the active one)" },
+                }),
+                &[],
+            ),
+        )),
+        read_only(Tool::new(
+            "baseline_list",
+            "Saved baselines with the finish date and budget each one promised; one is active.",
+            schema(json!({}), &[]),
+        )),
+        read_only(Tool::new(
+            "variance",
+            "How the current schedule differs from a baseline: finish and cost, and per task start/finish variance in working days and cost variance.",
+            schema(
+                json!({
+                    "baseline": { "type": "string", "description": "Default: the active one" },
+                    "changed": { "type": "boolean", "description": "Only tasks that moved, changed cost or are new" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "cursor": { "type": "string" },
+                }),
+                &[],
+            ),
+        )),
+        Tool::new(
+            "baseline_save",
+            "Freeze the current schedule (dates, costs, planned value) as a new active baseline. Never overwrites an existing one; a revision should carry a change reference.",
+            schema(
+                json!({
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "change_ref": { "type": "string", "description": "Change request that approved it" },
+                    "reason": { "type": "string" },
+                    "approved_by": { "type": "string" },
+                    "date": { "type": "string", "description": "YYYY-MM-DD (default today)" },
+                    "dry_run": { "type": "boolean" },
+                }),
+                &["id"],
+            ),
+        )
+        .annotate(ToolAnnotations::new().read_only(false).destructive(false).idempotent(false)),
+        read_only(Tool::new(
             "diff",
             "What moved compared with another version of the plan: a file or a git revision.",
             schema(
@@ -254,9 +342,13 @@ pub fn tools() -> Vec<Tool> {
         )),
         read_only(Tool::new(
             "render",
-            "Render the Gantt chart and return it as an image (PNG) so you can look at it, or as SVG text.",
+            "Render a chart and return it as an image (PNG) so you can look at it, or as SVG text: the Gantt chart (default), a resource histogram (demand vs capacity) or the S-curve (forecast and planned value).",
             schema(
                 json!({
+                    "chart": { "enum": ["gantt", "histogram", "scurve"], "description": "Default gantt" },
+                    "resource": { "type": "string", "description": "Resource id, for histogram" },
+                    "period": { "enum": ["day", "week", "month"], "description": "histogram (default week) and scurve (default month)" },
+                    "baseline": { "type": "string", "description": "scurve: baseline for planned value (default the active one)" },
                     "format": { "enum": ["png", "svg"], "description": "Default png" },
                     "range": { "type": "string", "description": "e.g. 2027-01..2027-06" },
                     "depth": { "type": "integer", "minimum": 1 },
@@ -268,10 +360,14 @@ pub fn tools() -> Vec<Tool> {
         )),
         Tool::new(
             "export",
-            "Write the chart (.svg, .png) or the task table (.csv) to a file.",
+            "Write a chart (.svg, .png: gantt, histogram or scurve) or the task table (.csv) to a file.",
             schema(
                 json!({
                     "out": { "type": "string" },
+                    "chart": { "enum": ["gantt", "histogram", "scurve"] },
+                    "resource": { "type": "string" },
+                    "period": { "enum": ["day", "week", "month"] },
+                    "baseline": { "type": "string" },
                     "range": { "type": "string" },
                     "depth": { "type": "integer", "minimum": 1 },
                     "scale": { "enum": ["day", "week", "month"] },
@@ -390,15 +486,30 @@ impl AlmaServer {
         }
     }
 
-    fn render_request(args: &JsonObject) -> RenderRequest {
-        RenderRequest {
+    fn render_request(
+        args: &JsonObject,
+        plan: &alma_ops::Plan,
+        path: &Path,
+    ) -> Result<RenderRequest, Outcome> {
+        let chart = str_arg(args, "chart").map(str::to_string);
+        let baseline = if chart.as_deref() == Some("scurve") {
+            alma_ops::baseline::snapshot_for(plan, path, str_arg(args, "baseline"))
+                .map_err(|m| Outcome::error("E-CLI-01", m))?
+        } else {
+            None
+        };
+        Ok(RenderRequest {
             range: str_arg(args, "range").map(str::to_string),
             depth: usize_arg(args, "depth"),
             scale: str_arg(args, "scale").map(str::to_string),
             dark: bool_arg(args, "dark"),
             no_arrows: false,
             font_size: None,
-        }
+            chart,
+            resource: str_arg(args, "resource").map(str::to_string),
+            period: str_arg(args, "period").map(str::to_string),
+            baseline,
+        })
     }
 
     /// Runs a tool. Synchronous and transport-free, so it is easy to test.
@@ -479,6 +590,106 @@ impl AlmaServer {
                     None => Outcome::error("E-OPS-02", format!("no task with id `{id}`")),
                 }
             }
+            "list_resources" => {
+                let (_, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                Outcome::ok(json!({
+                    "schema": alma_ops::OUTPUT_SCHEMA,
+                    "resources": alma_ops::resources::list(plan, s),
+                }))
+            }
+            "resource_usage" => {
+                let (_, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let id = str_arg(args, "id").unwrap_or_default();
+                let period = str_arg(args, "period").unwrap_or("week");
+                let mut v = alma_ops::resources::usage(plan, s, id, period)
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                let page = Page::new(usize_arg(args, "limit"), str_arg(args, "cursor"));
+                let total = v.periods.len();
+                let (items, next) = page.apply(&v.periods);
+                v.periods = items;
+                let mut out = serde_json::to_value(&v).unwrap_or(Value::Null);
+                out["total"] = total.into();
+                if let Some(n) = next {
+                    out["next_cursor"] = n.into();
+                }
+                Outcome::ok(out)
+            }
+            "cost" => {
+                let (_, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let by = str_arg(args, "by").unwrap_or("wbs");
+                let depth = usize_arg(args, "depth").unwrap_or(1);
+                let r = alma_ops::cost::report(plan, s, by, depth)
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                Outcome::from(&r, false)
+            }
+            "scurve" => {
+                let (_, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let (path, _) = self.load(args)?;
+                let want = str_arg(args, "baseline");
+                let snap = if want.is_none() && !plan.baselines.iter().any(|b| b.active) {
+                    None
+                } else {
+                    let id = alma_ops::baseline::pick(plan, want)
+                        .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                    Some(
+                        alma_ops::baseline::read_snapshot(&path, id)
+                            .map_err(|m| Outcome::error("E-CLI-01", m))?,
+                    )
+                };
+                let r = alma_ops::cost::scurve(
+                    plan,
+                    s,
+                    str_arg(args, "period").unwrap_or("month"),
+                    snap.as_ref(),
+                )
+                .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                Outcome::from(&r, false)
+            }
+            "baseline_list" => {
+                let (path, l) = self.load(args)?;
+                let Some(plan) = l.plan.as_ref() else {
+                    return Err(Outcome::error("E-OPS-04", "the plan file has errors"));
+                };
+                Outcome::ok(json!({
+                    "schema": alma_ops::OUTPUT_SCHEMA,
+                    "baselines": alma_ops::baseline::list(plan, &path),
+                }))
+            }
+            "variance" => {
+                let (path, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let id = alma_ops::baseline::pick(plan, str_arg(args, "baseline"))
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                let snap = alma_ops::baseline::read_snapshot(&path, id)
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                let page = Page::new(usize_arg(args, "limit"), str_arg(args, "cursor"));
+                Outcome::from(
+                    &alma_ops::baseline::variance(plan, s, &snap, bool_arg(args, "changed"), page),
+                    false,
+                )
+            }
+            "baseline_save" => {
+                let path = self.plan_path(args)?;
+                let id = str_arg(args, "id").unwrap_or_default().to_string();
+                let s = |k| str_arg(args, k).map(str::to_string);
+                let meta = alma_ops::mutate::BaselineMeta {
+                    id,
+                    name: s("name"),
+                    date: s("date").unwrap_or_else(|| alma_ops::files::today().to_string()),
+                    change_ref: s("change_ref"),
+                    reason: s("reason"),
+                    approved_by: s("approved_by"),
+                };
+                let _guard = self.write_lock.lock().unwrap_or_else(|p| p.into_inner());
+                match alma_ops::baseline::save(&path, &meta, bool_arg(args, "dry_run")) {
+                    Ok(r) => Outcome::from(&r, !r.report.ok),
+                    Err(e) => Outcome::error("E-CLI-01", format!("cannot save the baseline: {e}")),
+                }
+            }
             "diff" => {
                 let path = self.plan_path(args)?;
                 let current =
@@ -518,9 +729,9 @@ impl AlmaServer {
                 }
             }
             "render" => {
-                let (_, l) = self.scheduled(args)?;
+                let (path, l) = self.scheduled(args)?;
                 let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
-                let req = Self::render_request(args);
+                let req = Self::render_request(args, plan, &path)?;
                 let warnings = alma_ops::export::warnings(plan, s, &req)
                     .map_err(|m| Outcome::error("E-CLI-01", m))?;
                 match str_arg(args, "format").unwrap_or("png") {
@@ -545,7 +756,7 @@ impl AlmaServer {
                 }
             }
             "export" => {
-                let (_, l) = self.scheduled(args)?;
+                let (path, l) = self.scheduled(args)?;
                 let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
                 let out = self
                     .path_arg(args, "out")
@@ -555,7 +766,7 @@ impl AlmaServer {
                     .and_then(|e| e.to_str())
                     .unwrap_or("svg")
                     .to_ascii_lowercase();
-                let req = Self::render_request(args);
+                let req = Self::render_request(args, plan, &path)?;
                 let bytes = match format.as_str() {
                     "svg" => alma_ops::export::svg(plan, s, &req).map(String::into_bytes),
                     "png" => alma_ops::export::png(plan, s, &req),

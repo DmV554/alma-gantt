@@ -8,14 +8,15 @@ use std::collections::HashSet;
 
 use alma_core::diag::{Diagnostic, Severity};
 use alma_core::model::{
-    Approach, ConstraintKind, DepNature, DepScope, DepType, MilestoneClass, ParamValue, Phase,
-    Plan, ReportingPeriod, SchedType, TaskKind, WbsRole,
+    Approach, ConstraintKind, DepNature, DepScope, DepType, Leveling, MilestoneClass, ParamValue,
+    Phase, Plan, ReportingPeriod, ReserveKind, SchedType, TaskKind, WbsRole,
 };
-use alma_core::time::format_instant;
+use alma_core::time::{finish_date, format_instant, start_date};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
 use crate::cpm::{Calendars, PlanIndex, Schedule, resolve_duration};
+use crate::resources;
 
 /// A lint rule.
 #[derive(Debug, Clone, Copy)]
@@ -40,11 +41,13 @@ use Severity::{Error as E, Info as I, Warn as W};
 
 /// Every rule implemented, in code order.
 pub const RULES: &[Rule] = &[
+    rule("L-BAS-05", Some(I), "Rebaseline without a change reference"),
     rule(
         "L-CAL-01",
         Some(W),
         "Calendar working day differs from hours_per_day",
     ),
+    rule("L-COST-01", Some(W), "Fixed cost without a category"),
     rule(
         "L-COST-02",
         Some(E),
@@ -100,6 +103,22 @@ pub const RULES: &[Rule] = &[
         Some(I),
         "Duration outside the three-point range",
     ),
+    rule(
+        "L-RES-01",
+        Some(W),
+        "Resource booked above its capacity (error once leveling is on)",
+    ),
+    rule(
+        "L-RES-02",
+        Some(W),
+        "Smoothing left an over-allocation it could not resolve within free float",
+    ),
+    rule(
+        "L-RES-05",
+        Some(W),
+        "Resource with assignments but no rate (its cost counts as zero)",
+    ),
+    rule("L-RISK-01", Some(W), "Contingency reserve without a basis"),
     rule(
         "L-SCH-01",
         Some(E),
@@ -741,6 +760,139 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                     ),
                     vec![id.clone()],
                 );
+            }
+        }
+    }
+
+    // Baselines (knowledge notes, scheduling §1.13 and §4.14).
+    for b in &plan.baselines {
+        if let (Some(parent), None) = (&b.parent, &b.change_ref) {
+            l.report(
+                usize::MAX,
+                "L-BAS-05",
+                I,
+                format!(
+                    "baseline `{}` revises `{parent}` without a change reference (change_ref)",
+                    b.id
+                ),
+                vec![b.id.clone(), parent.clone()],
+            );
+        }
+    }
+
+    // Reserves (knowledge notes, resources §4.1).
+    for r in &plan.reserves {
+        if r.kind == ReserveKind::Contingency && r.basis.is_none() {
+            let before = l.out.len();
+            l.report(
+                usize::MAX,
+                "L-RISK-01",
+                W,
+                format!(
+                    "contingency `{}` has no basis: a reserve nobody can justify reads as padding",
+                    r.id
+                ),
+                vec![r.id.clone()],
+            );
+            if l.out.len() > before
+                && let Some((_, d)) = l.out.last_mut()
+            {
+                *d = d.clone().with_hint(
+                    "say how it was sized: `--basis \"EMV of risks R-03, R-07\"` or a percentage and why",
+                );
+            }
+        }
+    }
+
+    // Costs (F-COST-07).
+    for res in &plan.resources {
+        if res.rate.is_some() {
+            continue;
+        }
+        let tasks: Vec<String> = plan
+            .tasks
+            .iter()
+            .filter(|t| t.assign.iter().any(|a| a.resource == res.id))
+            .map(|t| t.id.clone())
+            .collect();
+        if tasks.is_empty() {
+            continue;
+        }
+        let msg = format!(
+            "`{}` is assigned to {} but has no rate, so its cost counts as zero",
+            res.id,
+            tasks.join(", ")
+        );
+        let before = l.out.len();
+        l.report(usize::MAX, "L-RES-05", W, msg, vec![res.id.clone()]);
+        if l.out.len() > before
+            && let Some((_, d)) = l.out.last_mut()
+        {
+            *d = d.clone().with_hint(format!(
+                "set it with `alma res set {} --rate AMOUNT/day` (or /hour, /week, /month, /use)",
+                res.id
+            ));
+        }
+    }
+    for (i, t) in plan.tasks.iter().enumerate() {
+        if let Some(fc) = &t.fixed_cost
+            && fc.category.is_none()
+        {
+            l.on(
+                i,
+                "L-COST-01",
+                format!(
+                    "fixed cost of `{}` has no category, so cost and cash-flow reports cannot group it",
+                    t.id
+                ),
+            );
+        }
+    }
+
+    // Resources (F-COST-04).
+    if let Some(s) = schedule {
+        for o in resources::overloads(plan, s) {
+            let r = &plan.resources[o.resource];
+            let tasks: Vec<String> = o.tasks.iter().map(|&t| plan.tasks[t].id.clone()).collect();
+            let (code, sev, hint) = match plan.settings.leveling {
+                Leveling::Off => (
+                    "L-RES-01",
+                    W,
+                    "let the scheduler resolve it with `alma level` (the finish may move) or \
+                     `alma level --mode smoothing` (only within free float); or lower the units, \
+                     raise max_units, or add a dependency between the competing tasks",
+                ),
+                Leveling::Leveling => (
+                    "L-RES-01",
+                    E,
+                    "leveling cannot fix this: one assignment is above max_units, or tasks with \
+                     fixed dates (MSO/MFO) or level-of-effort tasks overlap; lower the units or \
+                     raise max_units",
+                ),
+                Leveling::Smoothing => (
+                    "L-RES-02",
+                    W,
+                    "there is no room within free float; `alma level --mode leveling` resolves it \
+                     by letting the finish move",
+                ),
+            };
+            let mut ids = vec![r.id.clone()];
+            ids.extend(tasks.iter().cloned());
+            let msg = format!(
+                "`{}` is booked {} of {} units from {} to {} ({})",
+                r.id,
+                o.peak.normalize(),
+                o.max.normalize(),
+                start_date(o.from),
+                finish_date(o.to),
+                tasks.join(", ")
+            );
+            let before = l.out.len();
+            l.report(usize::MAX, code, sev, msg, ids);
+            if l.out.len() > before
+                && let Some((_, d)) = l.out.last_mut()
+            {
+                *d = d.clone().with_hint(hint);
             }
         }
     }

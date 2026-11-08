@@ -11,6 +11,9 @@ currency = "UF"
 
 [settings.schedule]
 reporting_period = "month"
+# Gate and yard software need seven developers at once and the team has six: the scheduler
+# delays gate software until yard software releases them (resource leveling, ADR 0011).
+leveling = "leveling"
 
 [rules.severity]
 # The 8/80-hour work package heuristic does not fit a nine-month plan with several teams:

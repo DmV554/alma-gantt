@@ -5,6 +5,8 @@
 //! Units are points (1/72 in). Text widths are estimated from an average glyph width until the
 //! renderer ships a bundled font (ADR 0009).
 
+pub mod charts;
+
 use std::collections::HashMap;
 
 use alma_core::model::{DepType, Plan, TaskKind};

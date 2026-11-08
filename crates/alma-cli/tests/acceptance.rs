@@ -5,6 +5,10 @@
 //! replay checks that every call that succeeded still succeeds, that every call that failed
 //! either works now or fails with a coded diagnostic (no unexplained failures), and that the
 //! final plan is byte-identical to the one the agent produced and lints cleanly.
+//!
+//! Since M2 the over-allocation check (L-RES-01) sees what M0 could not: the brief's team is
+//! too small for its parallel work (seven developers for six, five technicians for four). The
+//! replay asserts exactly those two warnings, then that `alma level` resolves them.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -64,6 +68,29 @@ fn recorded_agent_session_replays() {
     let produced = std::fs::read_to_string(work.join("terminal.alma.toml")).unwrap();
     let expected = std::fs::read_to_string(dir().join("expected.alma.toml")).unwrap();
     assert_eq!(produced, expected, "same commands must give the same bytes");
+    let out = Command::new(env!("CARGO_BIN_EXE_alma"))
+        .args(["--json", "check"])
+        .env("ALMA_FILE", work.join("terminal.alma.toml"))
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["counts"]["error"].as_u64(), Some(0), "{v}");
+    let warns: Vec<(&str, &str)> = v["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["severity"] == "warn")
+        .map(|d| (d["code"].as_str().unwrap(), d["ids"][0].as_str().unwrap()))
+        .collect();
+    assert_eq!(warns, [("L-RES-01", "dev"), ("L-RES-01", "tech")], "{v}");
+
+    // The fix the hint suggests.
+    let level = Command::new(env!("CARGO_BIN_EXE_alma"))
+        .args(["--json", "level"])
+        .env("ALMA_FILE", work.join("terminal.alma.toml"))
+        .output()
+        .unwrap();
+    assert!(level.status.success());
     let out = Command::new(env!("CARGO_BIN_EXE_alma"))
         .args(["--json", "check"])
         .env("ALMA_FILE", work.join("terminal.alma.toml"))

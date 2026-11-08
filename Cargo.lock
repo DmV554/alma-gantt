@@ -84,6 +84,7 @@ dependencies = [
  "alma-sched",
  "jiff",
  "proptest",
+ "rust_decimal",
  "serde",
  "serde_json",
  "toml_edit",
@@ -94,6 +95,7 @@ name = "alma-sched"
 version = "0.0.0"
 dependencies = [
  "alma-core",
+ "alma-format",
  "jiff",
  "proptest",
  "rust_decimal",

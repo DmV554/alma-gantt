@@ -140,6 +140,64 @@ fn e_ref_01_duplicate_id_across_types() {
 }
 
 #[test]
+fn baselines_one_active_known_parent_global_ids() {
+    let ok = "[[task]]\nid = \"a\"\nname = \"A\"\n\
+              [[baseline]]\nid = \"b1\"\ndate = 2027-01-04\n\
+              [[baseline]]\nid = \"b2\"\nactive = true\nparent = \"b1\"\nchange_ref = \"CR-1\"\n";
+    assert!(codes(ok).is_empty(), "{:?}", codes(ok));
+    let plan = parse(&format!("{HEAD}{ok}")).plan.unwrap();
+    assert_eq!(plan.baselines.len(), 2);
+    assert!(plan.baselines[1].active && !plan.baselines[0].active);
+    assert_eq!(plan.baselines[0].name, "b1");
+    assert_eq!(
+        codes(
+            "[[baseline]]\nid = \"b1\"\nactive = true\n[[baseline]]\nid = \"b2\"\nactive = true\n"
+        ),
+        ["E-FMT-03"],
+        "two active baselines"
+    );
+    assert_eq!(
+        codes("[[baseline]]\nid = \"b1\"\nparent = \"b0\"\n"),
+        ["E-REF-03"]
+    );
+    assert_eq!(
+        codes("[[task]]\nid = \"b1\"\nname = \"A\"\n[[baseline]]\nid = \"b1\"\n"),
+        ["E-REF-01"]
+    );
+    assert_eq!(
+        codes("[[baseline]]\nid = \"b1\"\nbac = \"3\"\n"),
+        ["E-FMT-02"]
+    );
+}
+
+#[test]
+fn reserves_need_an_amount_string_and_a_known_scope() {
+    let ok = "[[task]]\nid = \"a\"\nname = \"A\"\n\
+              [[reserve]]\nid = \"c1\"\namount = \"120.5\"\nscope = \"a\"\nbasis = \"EMV\"\n\
+              [[reserve]]\nid = \"mr\"\nkind = \"management\"\namount = \"300\"\n";
+    assert!(codes(ok).is_empty(), "{:?}", codes(ok));
+    let plan = parse(&format!("{HEAD}{ok}")).plan.unwrap();
+    assert_eq!(
+        plan.reserves[0].kind,
+        alma_core::model::ReserveKind::Contingency
+    );
+    assert_eq!(
+        plan.reserves[1].kind,
+        alma_core::model::ReserveKind::Management
+    );
+    assert_eq!(codes("[[reserve]]\nid = \"c\"\namount = 3\n"), ["E-FMT-03"]);
+    assert_eq!(codes("[[reserve]]\nid = \"c\"\n"), ["E-FMT-03"]);
+    assert_eq!(
+        codes("[[reserve]]\nid = \"c\"\namount = \"3\"\nscope = \"zz\"\n"),
+        ["E-REF-03"]
+    );
+    assert_eq!(
+        codes("[[reserve]]\nid = \"c\"\namount = \"3\"\nrisks = [\"r1\"]\n"),
+        ["E-FMT-05"]
+    );
+}
+
+#[test]
 fn e_ref_02_bad_id() {
     assert_eq!(
         codes("[[task]]\nid = \"Gate_A\"\nname = \"A\"\n"),
@@ -206,6 +264,8 @@ const DOC_TABLES: &[(&str, &str)] = &[
     ("### 6.5 `[[task]]`", "task"),
     ("### 6.6 `[[resource]]`", "resource"),
     ("### 6.7 `[[cadence]]`", "cadence"),
+    ("### 6.9 `[[baseline]]`", "baseline"),
+    ("### 6.10 `[[reserve]]`", "reserve"),
 ];
 
 fn backticked(cell: &str) -> Vec<String> {
@@ -248,11 +308,7 @@ fn format_doc_matches_key_registry() {
                     .iter()
                     .position(|h| h == "Tier")
                     .map(|i| cells[i].chars().next().unwrap())
-                    .unwrap_or(if *table == "resource" || *table == "cadence" {
-                        'B'
-                    } else {
-                        'A'
-                    });
+                    .unwrap_or(if *table == "cadence" { 'B' } else { 'A' });
                 for key in backticked(&cells[key_col]) {
                     documented.push((table.to_string(), key, tier));
                 }
@@ -288,6 +344,8 @@ fn format_doc_matches_key_registry() {
         "task.deps",
         "resource",
         "cadence",
+        "baseline",
+        "reserve",
     ] {
         for def in KEYS
             .iter()

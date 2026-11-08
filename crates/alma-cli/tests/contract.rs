@@ -82,10 +82,11 @@ fn json_output_on_every_query() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["counts"]["error"], 0);
     assert_eq!(v["counts"]["warn"], 0);
+    // The fixture is leveled: gate software waits for the developers yard software holds.
     let (_, v) = p.json(&["show", "gate-sw"]);
-    assert_eq!(v["start"], "2027-03-08");
-    assert_eq!(v["finish"], "2027-04-30");
-    assert_eq!(v["tf"], 10.0);
+    assert_eq!(v["start"], "2027-05-17");
+    assert_eq!(v["finish"], "2027-07-09");
+    assert_eq!(v["tf"], 0.0);
     let (_, v) = p.json(&["critical"]);
     assert_eq!(v["critical"][0]["id"], "kickoff");
     let (_, v) = p.json(&["explain", "uat"]);
@@ -137,7 +138,17 @@ fn edits_change_only_their_lines() {
     assert!(after.contains("duration = \"55d\""));
     // Comments survive.
     assert!(after.contains("# --- Yard subproject"));
-    assert_eq!(v["changed"][0]["id"], "yard");
+    // Longer yard software holds the developers longer, so leveled gate software moves too.
+    let moved: Vec<&str> = v["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        moved.contains(&"yard-sw") && moved.contains(&"gate-sw"),
+        "{v}"
+    );
     assert!(p.dir.join(".alma/log.jsonl").exists());
 }
 
@@ -463,12 +474,15 @@ fn calendars_holidays_and_project_settings() {
         text.contains("working = false },\n  { name = \"Fiestas Patrias\""),
         "one per line:\n{text}"
     );
+    // The holiday falls inside gate software (leveled), so it shifts integrated testing.
     let (_, v) = p.json(&["explain", "pilot"]);
     assert!(
-        v["chain"][0]["because"]
-            .as_str()
+        v["chain"]
+            .as_array()
             .unwrap()
-            .contains("Fiestas Patrias"),
+            .iter()
+            .any(|s| s["id"] == "integration-tests"
+                && s["because"].as_str().unwrap().contains("Fiestas Patrias")),
         "{v}"
     );
     // A second calendar, then make it the project default.
@@ -517,7 +531,7 @@ fn rule_set_and_keys() {
             .any(|k| k["key"] == "iteration" && k["status"] == "reserved for M4")
     );
     let (_, v) = p.json(&["critical"]);
-    assert_eq!(v["project_finish"], "2027-07-30");
+    assert_eq!(v["project_finish"], "2027-09-24");
 }
 
 #[test]
@@ -553,4 +567,422 @@ fn empty_plans_export_and_query() {
     let out = p.dir.join("e.svg");
     let (code, _) = p.json(&["export", out.to_str().unwrap()]);
     assert_eq!(code, 0);
+}
+
+#[test]
+fn resources_usage_and_leveling() {
+    let p = Plan::new("level");
+    let (code, v) = p.json(&["res", "ls"]);
+    assert_eq!(code, 0);
+    let dev = &v["resources"][1];
+    assert_eq!(
+        (dev["id"].as_str(), dev["over_allocations"].as_u64()),
+        (Some("dev"), Some(0))
+    );
+
+    // Leveled fixture: monthly dev demand never exceeds capacity.
+    let (code, v) = p.json(&["res", "usage", "dev", "--period", "month"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["periods"][0]["start"], "2027-01-01");
+    assert!(v["over_allocated"].as_array().unwrap().is_empty());
+    let (_, page) = p.json(&["res", "usage", "dev", "--period", "week", "--limit", "3"]);
+    assert_eq!(page["periods"].as_array().unwrap().len(), 3);
+    assert!(page["next_cursor"].is_string());
+
+    // Turning leveling off is previewed with its consequences and writes nothing.
+    let before = p.text();
+    let (code, v) = p.json(&["level", "--mode", "off", "--dry-run"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["end_date_delta"], "-40d");
+    assert_eq!(v["leveling"]["mode"], "off");
+    assert_eq!(v["leveling"]["over_allocated"][0]["resource"], "dev");
+    assert!(
+        v["critical_path_changed"]["removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x == "gate-sw"),
+        "{v}"
+    );
+    let codes: Vec<&str> = v["new_diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["L-RES-01", "L-RES-01"]);
+    assert_eq!(p.text(), before);
+
+    // Leveling again is a no-op; a bad mode is refused and leaves the file alone.
+    let (code, v) = p.json(&["level"]);
+    assert_eq!((code, v["noop"].as_bool()), (0, Some(true)), "{v}");
+    let (code, v) = p.json(&["level", "--mode", "fast"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-04"))
+    );
+    assert_eq!(p.text(), before);
+
+    // Smoothing keeps the finish and says what it could not fix.
+    let (code, v) = p.json(&["level", "--mode", "smoothing"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["leveling"]["finish"], v["leveling"]["unleveled_finish"]);
+    assert_eq!(v["leveling"]["unresolved"][0], "gate-sw");
+    assert!(p.text().contains("leveling = \"smoothing\""));
+
+    // An unknown resource is a usage error.
+    let (code, v) = p.json(&["res", "usage", "nobody"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (2, Some("E-CLI-01"))
+    );
+}
+
+#[test]
+fn settings_set_and_unset() {
+    let p = Plan::new("settings");
+    let (code, v) = p.json(&[
+        "settings",
+        "set",
+        "near_critical=10d",
+        "phase=preliminary",
+        "hours_per_day=8",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let text = p.text();
+    assert!(
+        text.contains("hours_per_day = 8\n"),
+        "numbers stay numbers:\n{text}"
+    );
+    assert!(text.contains("near_critical = \"10d\""), "{text}");
+    assert!(text.contains("phase = \"preliminary\""));
+    let (code, v) = p.json(&["settings", "set", "near_critical=10d", "phase=preliminary"]);
+    assert_eq!((code, v["noop"].as_bool()), (0, Some(true)));
+    let (code, v) = p.json(&["settings", "set", "--unset", "phase"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(!p.text().contains("phase ="));
+    // Unknown and reserved keys are refused, with the list of valid ones.
+    let before = p.text();
+    for bad in ["speed=1", "progress_logic=retained"] {
+        let (code, v) = p.json(&["settings", "set", bad]);
+        assert_eq!(
+            (code, v["errors"][0]["code"].as_str()),
+            (1, Some("E-FMT-02")),
+            "{bad}"
+        );
+        assert!(
+            v["errors"][0]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("leveling")
+        );
+    }
+    assert_eq!(p.text(), before);
+}
+
+#[test]
+fn costs_and_s_curve() {
+    let p = Plan::new("cost");
+    let (code, v) = p.json(&["cost"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        (v["total"].as_f64(), v["currency"].as_str()),
+        (Some(4714.5), Some("UF"))
+    );
+    assert_eq!(v["rows"].as_array().unwrap().len(), 6, "top-level WBS");
+    let (_, v) = p.json(&["cost", "--by", "category"]);
+    assert_eq!(v["rows"][0]["id"], "investment");
+    let (code, v) = p.json(&["cost", "--by", "colour"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (2, Some("E-CLI-01"))
+    );
+    let (_, v) = p.json(&["scurve", "--period", "month"]);
+    assert_eq!(v["basis"], "forecast");
+    assert_eq!(
+        v["points"].as_array().unwrap().last().unwrap()["cumulative"],
+        4714.5
+    );
+    let out = p.alma(&["scurve", "--csv"]);
+    let csv = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        csv.starts_with("start,end,cost,cumulative\n2027-01-01,2027-01-31,288.00,288.00\n"),
+        "{csv}"
+    );
+    let (_, v) = p.json(&["ls", "--fields", "id,cost", "--limit", "1"]);
+    assert_eq!(v["tasks"][0]["cost"], 432.0);
+
+    // Raising a rate is previewed, then applied; the same command again is a no-op.
+    let before = p.text();
+    let (code, v) = p.json(&["res", "set", "dev", "--rate", "5/day", "--dry-run"]);
+    assert_eq!((code, v["dry_run"].as_bool()), (0, Some(true)), "{v}");
+    // 560 developer-days × 0.8 more per day.
+    assert_eq!(v["cost_delta"], "+448.00");
+    assert_eq!(p.text(), before);
+    let (code, _) = p.json(&["res", "set", "dev", "--rate", "5/day"]);
+    assert_eq!(code, 0);
+    assert_eq!(changed_lines(&before, &p.text()), 1);
+    let (_, v) = p.json(&["cost", "--by", "resource"]);
+    assert_eq!(v["rows"][1]["cost"], 2800.0);
+    let (code, v) = p.json(&["res", "set", "dev", "--rate", "5/day"]);
+    assert_eq!((code, v["noop"].as_bool()), (0, Some(true)));
+    // Removing the rate leaves the cost at zero and says so.
+    let (code, v) = p.json(&["res", "set", "pm", "--unset", "rate"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["new_diagnostics"][0]["code"], "L-RES-05");
+    let (code, v) = p.json(&["res", "set", "nobody", "--rate", "1/day"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-02"))
+    );
+    let (code, v) = p.json(&["res", "set", "dev", "--unset", "id"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-FMT-02"))
+    );
+}
+
+#[test]
+fn baselines_variance_and_planned_value() {
+    let p = Plan::new("baseline");
+    let snap = p.dir.join(".alma/baselines/plan/b1.toml");
+    // No baseline yet: variance is a usage error that says what to do.
+    let (code, v) = p.json(&["variance"]);
+    assert_eq!(code, 2);
+    assert!(
+        v["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("baseline save")
+    );
+
+    // A dry run writes neither the plan nor the snapshot.
+    let before = p.text();
+    let (code, v) = p.json(&[
+        "baseline",
+        "save",
+        "b1",
+        "--date",
+        "2026-12-15",
+        "--dry-run",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["baseline"]["bac"], 4714.5);
+    assert_eq!(p.text(), before);
+    assert!(!snap.exists());
+
+    let (code, v) = p.json(&[
+        "baseline",
+        "save",
+        "b1",
+        "--name",
+        "Contract",
+        "--date",
+        "2026-12-15",
+        "--approved-by",
+        "Sponsor",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert!(snap.exists());
+    assert_eq!(
+        v["changed"].as_array().unwrap().len(),
+        0,
+        "saving moves no date"
+    );
+    let text = p.text();
+    assert!(text.ends_with(
+        "[[baseline]]\nid = \"b1\"\nname = \"Contract\"\ndate = 2026-12-15\nactive = true\napproved_by = \"Sponsor\"\n"
+    ), "{text}");
+    let (code, _) = p.json(&["fmt", "--check"]);
+    assert_eq!(code, 0, "a saved baseline keeps the canonical layout");
+
+    // Never overwritten.
+    let snap_text = std::fs::read_to_string(&snap).unwrap();
+    let (code, v) = p.json(&["baseline", "save", "b1", "--date", "2026-12-16"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-01"))
+    );
+    assert_eq!(std::fs::read_to_string(&snap).unwrap(), snap_text);
+
+    // Against itself nothing varies; after a change, it does.
+    let (_, v) = p.json(&["variance", "--changed"]);
+    assert_eq!(
+        (v["total"].as_u64(), v["finish_var"].as_f64()),
+        (Some(0), Some(0.0))
+    );
+    p.json(&["task", "set", "yard-sw", "--duration", "55d"]);
+    let (code, v) = p.json(&["variance", "--changed", "--limit", "2"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["finish_var"], 5.0);
+    assert_eq!(v["tasks"].as_array().unwrap().len(), 2);
+    assert!(v["next_cursor"].is_string());
+
+    // The S-curve gains planned value from the active baseline.
+    let (_, v) = p.json(&["scurve"]);
+    assert_eq!(v["baseline"], "b1");
+    let last = v["points"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["pv"], 4714.5);
+    let out = p.alma(&["scurve", "--csv"]);
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .starts_with("start,end,cost,cumulative,pv\n")
+    );
+
+    // A revision without a change reference is noted; the new one becomes active.
+    let (code, v) = p.json(&["baseline", "save", "b2", "--date", "2027-01-10"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["new_diagnostics"][0]["code"], "L-BAS-05");
+    let (_, v) = p.json(&["baseline", "ls"]);
+    let rows = v["baselines"].as_array().unwrap();
+    assert_eq!(
+        (rows[0]["active"].as_bool(), rows[1]["active"].as_bool()),
+        (Some(false), Some(true))
+    );
+    assert_eq!(rows[1]["parent"], "b1");
+    let (_, v) = p.json(&["variance", "--baseline", "b1", "--limit", "1"]);
+    assert_eq!(v["baseline"], "b1");
+
+    // A missing snapshot is reported, not ignored.
+    std::fs::remove_file(&snap).unwrap();
+    let (code, v) = p.json(&["variance", "--baseline", "b1"]);
+    assert_eq!(code, 2);
+    assert!(
+        v["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no snapshot")
+    );
+    let (_, v) = p.json(&["baseline", "ls"]);
+    assert!(v["baselines"][0]["error"].is_string());
+}
+
+#[test]
+fn reserves_and_the_cost_stack() {
+    let p = Plan::new("reserve");
+    let (code, v) = p.json(&[
+        "reserve",
+        "add",
+        "c-ocr",
+        "--amount",
+        "120",
+        "--scope",
+        "gate-ocr",
+        "--basis",
+        "EMV of OCR risks",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["cost_delta"], "+120.00");
+    let (code, v) = p.json(&[
+        "reserve",
+        "add",
+        "mr",
+        "--amount",
+        "300",
+        "--kind",
+        "management",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert!(
+        v.get("cost_delta").is_none(),
+        "management reserve is outside the baseline"
+    );
+    let (_, v) = p.json(&["cost"]);
+    let st = &v["stack"];
+    assert_eq!(
+        (
+            st["work"].as_f64(),
+            st["contingency"].as_f64(),
+            st["cost_baseline"].as_f64()
+        ),
+        (Some(4714.5), Some(120.0), Some(4834.5))
+    );
+    assert_eq!(
+        (
+            st["management_reserve"].as_f64(),
+            st["project_budget"].as_f64()
+        ),
+        (Some(300.0), Some(5134.5))
+    );
+    let (_, v) = p.json(&["scurve"]);
+    assert_eq!(
+        (v["total"].as_f64(), v["budget"].as_f64()),
+        (Some(4834.5), Some(5134.5))
+    );
+    // Same reserve again: no-op; different: refused. Unknown scope: refused.
+    let (code, v) = p.json(&[
+        "reserve",
+        "add",
+        "mr",
+        "--amount",
+        "300",
+        "--kind",
+        "management",
+    ]);
+    assert_eq!((code, v["noop"].as_bool()), (0, Some(true)));
+    let (code, v) = p.json(&[
+        "reserve",
+        "add",
+        "mr",
+        "--amount",
+        "400",
+        "--kind",
+        "management",
+    ]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-01"))
+    );
+    let (code, v) = p.json(&["reserve", "add", "c2", "--amount", "5", "--scope", "nope"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-REF-03"))
+    );
+    let (code, v) = p.json(&["reserve", "add", "c3", "--amount", "5"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["new_diagnostics"][0]["code"], "L-RISK-01");
+    for id in ["c-ocr", "mr", "c3"] {
+        let (code, _) = p.json(&["reserve", "rm", id]);
+        assert_eq!(code, 0);
+    }
+    assert!(!p.text().contains("[[reserve]]"));
+    let (code, v) = p.json(&["reserve", "rm", "mr"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-02"))
+    );
+}
+
+#[test]
+fn histogram_and_s_curve_charts() {
+    let p = Plan::new("charts");
+    let out = p.dir.join("hist.png");
+    let (code, v) = p.json(&[
+        "export",
+        out.to_str().unwrap(),
+        "--chart",
+        "histogram",
+        "--resource",
+        "dev",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(&std::fs::read(&out).unwrap()[..4], b"\x89PNG");
+    let svg = p.alma(&["export", "-", "--chart", "scurve", "--period", "week"]);
+    let svg = String::from_utf8(svg.stdout).unwrap();
+    assert!(svg.starts_with("<svg") && svg.contains("S-curve"), "{svg}");
+    // A histogram needs a resource, and says which ones exist.
+    let (code, v) = p.json(&["export", "-", "--chart", "histogram"]);
+    assert_eq!(code, 2);
+    assert!(v["errors"][0]["message"].as_str().unwrap().contains("dev"));
+    let (code, _) = p.json(&["export", "-", "--chart", "pie"]);
+    assert_eq!(code, 2);
+    // With a baseline, the S-curve draws planned value too.
+    p.json(&["baseline", "save", "b1", "--date", "2026-12-15"]);
+    let svg = p.alma(&["export", "-", "--chart", "scurve"]);
+    assert!(
+        String::from_utf8(svg.stdout)
+            .unwrap()
+            .contains("planned value (b1)")
+    );
 }
