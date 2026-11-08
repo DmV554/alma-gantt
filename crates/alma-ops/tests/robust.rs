@@ -194,6 +194,28 @@ fn arb_op() -> impl Strategy<Value = Op> {
             code: "L-DEP-02".into(),
             severity: s.into()
         }),
+        prop_oneof![
+            Just("leveling"),
+            Just("smoothing"),
+            Just("off"),
+            Just("bogus")
+        ]
+        .prop_map(|m| Op::Level {
+            mode: Some(m.into())
+        }),
+        (
+            prop_oneof![
+                Just("near_critical"),
+                Just("phase"),
+                Just("hours_per_day"),
+                Just("bogus")
+            ],
+            prop_oneof![Just("10d"), Just("baselined"), Just("7"), Just("x")],
+        )
+            .prop_map(|(k, v)| Op::SettingsSet {
+                fields: fields(&[(k, v)]),
+                unset: Vec::new(),
+            }),
         (1u32..5).prop_map(|c| Op::CadenceAdd {
             id: "team-b".into(),
             start: "2027-05-03".into(),

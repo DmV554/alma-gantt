@@ -82,10 +82,11 @@ fn json_output_on_every_query() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["counts"]["error"], 0);
     assert_eq!(v["counts"]["warn"], 0);
+    // The fixture is leveled: gate software waits for the developers yard software holds.
     let (_, v) = p.json(&["show", "gate-sw"]);
-    assert_eq!(v["start"], "2027-03-08");
-    assert_eq!(v["finish"], "2027-04-30");
-    assert_eq!(v["tf"], 10.0);
+    assert_eq!(v["start"], "2027-05-17");
+    assert_eq!(v["finish"], "2027-07-09");
+    assert_eq!(v["tf"], 0.0);
     let (_, v) = p.json(&["critical"]);
     assert_eq!(v["critical"][0]["id"], "kickoff");
     let (_, v) = p.json(&["explain", "uat"]);
@@ -137,7 +138,17 @@ fn edits_change_only_their_lines() {
     assert!(after.contains("duration = \"55d\""));
     // Comments survive.
     assert!(after.contains("# --- Yard subproject"));
-    assert_eq!(v["changed"][0]["id"], "yard");
+    // Longer yard software holds the developers longer, so leveled gate software moves too.
+    let moved: Vec<&str> = v["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        moved.contains(&"yard-sw") && moved.contains(&"gate-sw"),
+        "{v}"
+    );
     assert!(p.dir.join(".alma/log.jsonl").exists());
 }
 
@@ -463,12 +474,15 @@ fn calendars_holidays_and_project_settings() {
         text.contains("working = false },\n  { name = \"Fiestas Patrias\""),
         "one per line:\n{text}"
     );
+    // The holiday falls inside gate software (leveled), so it shifts integrated testing.
     let (_, v) = p.json(&["explain", "pilot"]);
     assert!(
-        v["chain"][0]["because"]
-            .as_str()
+        v["chain"]
+            .as_array()
             .unwrap()
-            .contains("Fiestas Patrias"),
+            .iter()
+            .any(|s| s["id"] == "integration-tests"
+                && s["because"].as_str().unwrap().contains("Fiestas Patrias")),
         "{v}"
     );
     // A second calendar, then make it the project default.
@@ -517,7 +531,7 @@ fn rule_set_and_keys() {
             .any(|k| k["key"] == "iteration" && k["status"] == "reserved for M4")
     );
     let (_, v) = p.json(&["critical"]);
-    assert_eq!(v["project_finish"], "2027-07-30");
+    assert_eq!(v["project_finish"], "2027-09-24");
 }
 
 #[test]
@@ -553,4 +567,115 @@ fn empty_plans_export_and_query() {
     let out = p.dir.join("e.svg");
     let (code, _) = p.json(&["export", out.to_str().unwrap()]);
     assert_eq!(code, 0);
+}
+
+#[test]
+fn resources_usage_and_leveling() {
+    let p = Plan::new("level");
+    let (code, v) = p.json(&["res", "ls"]);
+    assert_eq!(code, 0);
+    let dev = &v["resources"][1];
+    assert_eq!(
+        (dev["id"].as_str(), dev["over_allocations"].as_u64()),
+        (Some("dev"), Some(0))
+    );
+
+    // Leveled fixture: monthly dev demand never exceeds capacity.
+    let (code, v) = p.json(&["res", "usage", "dev", "--period", "month"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["periods"][0]["start"], "2027-01-01");
+    assert!(v["over_allocated"].as_array().unwrap().is_empty());
+    let (_, page) = p.json(&["res", "usage", "dev", "--period", "week", "--limit", "3"]);
+    assert_eq!(page["periods"].as_array().unwrap().len(), 3);
+    assert!(page["next_cursor"].is_string());
+
+    // Turning leveling off is previewed with its consequences and writes nothing.
+    let before = p.text();
+    let (code, v) = p.json(&["level", "--mode", "off", "--dry-run"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["end_date_delta"], "-40d");
+    assert_eq!(v["leveling"]["mode"], "off");
+    assert_eq!(v["leveling"]["over_allocated"][0]["resource"], "dev");
+    assert!(
+        v["critical_path_changed"]["removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x == "gate-sw"),
+        "{v}"
+    );
+    let codes: Vec<&str> = v["new_diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["L-RES-01", "L-RES-01"]);
+    assert_eq!(p.text(), before);
+
+    // Leveling again is a no-op; a bad mode is refused and leaves the file alone.
+    let (code, v) = p.json(&["level"]);
+    assert_eq!((code, v["noop"].as_bool()), (0, Some(true)), "{v}");
+    let (code, v) = p.json(&["level", "--mode", "fast"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-04"))
+    );
+    assert_eq!(p.text(), before);
+
+    // Smoothing keeps the finish and says what it could not fix.
+    let (code, v) = p.json(&["level", "--mode", "smoothing"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["leveling"]["finish"], v["leveling"]["unleveled_finish"]);
+    assert_eq!(v["leveling"]["unresolved"][0], "gate-sw");
+    assert!(p.text().contains("leveling = \"smoothing\""));
+
+    // An unknown resource is a usage error.
+    let (code, v) = p.json(&["res", "usage", "nobody"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (2, Some("E-CLI-01"))
+    );
+}
+
+#[test]
+fn settings_set_and_unset() {
+    let p = Plan::new("settings");
+    let (code, v) = p.json(&[
+        "settings",
+        "set",
+        "near_critical=10d",
+        "phase=preliminary",
+        "hours_per_day=8",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let text = p.text();
+    assert!(
+        text.contains("hours_per_day = 8\n"),
+        "numbers stay numbers:\n{text}"
+    );
+    assert!(text.contains("near_critical = \"10d\""), "{text}");
+    assert!(text.contains("phase = \"preliminary\""));
+    let (code, v) = p.json(&["settings", "set", "near_critical=10d", "phase=preliminary"]);
+    assert_eq!((code, v["noop"].as_bool()), (0, Some(true)));
+    let (code, v) = p.json(&["settings", "set", "--unset", "phase"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(!p.text().contains("phase ="));
+    // Unknown and reserved keys are refused, with the list of valid ones.
+    let before = p.text();
+    for bad in ["speed=1", "progress_logic=retained"] {
+        let (code, v) = p.json(&["settings", "set", bad]);
+        assert_eq!(
+            (code, v["errors"][0]["code"].as_str()),
+            (1, Some("E-FMT-02")),
+            "{bad}"
+        );
+        assert!(
+            v["errors"][0]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("leveling")
+        );
+    }
+    assert_eq!(p.text(), before);
 }

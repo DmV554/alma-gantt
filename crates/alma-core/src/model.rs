@@ -225,6 +225,18 @@ string_enum! {
 }
 
 string_enum! {
+    /// How the scheduler resolves resource over-allocation (SPEC.md §7.4, ADR 0011).
+    Leveling {
+        /// Dates follow logic only; over-allocation is reported, not resolved.
+        Off = "off",
+        /// Delay tasks within their free float only: the finish date never moves.
+        Smoothing = "smoothing",
+        /// Delay tasks as far as needed; the finish date may move.
+        Leveling = "leveling",
+    }
+}
+
+string_enum! {
     /// Reporting period.
     ReportingPeriod {
         /// One week.
@@ -335,6 +347,8 @@ pub struct ScheduleSettings {
     pub rolling_wave_horizon: Option<Duration>,
     /// Three-point formula.
     pub three_point: Dist,
+    /// Resource leveling mode.
+    pub leveling: Leveling,
 }
 
 impl Default for ScheduleSettings {
@@ -350,6 +364,7 @@ impl Default for ScheduleSettings {
             reporting_period: None,
             rolling_wave_horizon: None,
             three_point: Dist::Beta,
+            leveling: Leveling::Off,
         }
     }
 }

@@ -48,6 +48,10 @@ fn every_tool_has_a_standalone_object_schema() {
         "dep_add",
         "cal_except",
         "rule_set",
+        "level",
+        "settings_set",
+        "list_resources",
+        "resource_usage",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
@@ -93,9 +97,9 @@ fn queries_match_the_cli_json() {
     assert!(!check.is_error);
     assert_eq!(check.json["counts"]["error"], 0);
     let crit = s.call("critical_path", &args(json!({})));
-    assert_eq!(crit.json["project_finish"], "2027-07-30");
+    assert_eq!(crit.json["project_finish"], "2027-09-24");
     let show = s.call("show_task", &args(json!({ "id": "gate-sw" })));
-    assert_eq!(show.json["tf"], 10.0);
+    assert_eq!(show.json["start"], "2027-05-17");
     let list = s.call("list_tasks", &args(json!({ "limit": 5, "fields": ["id"] })));
     assert_eq!(list.json["tasks"].as_array().unwrap().len(), 5);
     assert_eq!(list.json["next_cursor"], "5");
@@ -142,6 +146,37 @@ fn mutations_dry_run_and_write() {
         })),
     );
     assert!(!r.is_error, "{}", r.json);
+}
+
+#[test]
+fn resources_and_leveling() {
+    let d = Dir::new("resources");
+    let s = d.server();
+    let r = s.call("list_resources", &args(json!({})));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["resources"].as_array().unwrap().len(), 4);
+    let r = s.call(
+        "resource_usage",
+        &args(json!({ "id": "dev", "period": "month", "limit": 2 })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["periods"].as_array().unwrap().len(), 2);
+    assert_eq!(r.json["next_cursor"], "2");
+    let r = s.call("resource_usage", &args(json!({ "id": "nobody" })));
+    assert!(r.is_error);
+
+    let before = d.text();
+    let r = s.call("level", &args(json!({ "mode": "off", "dry_run": true })));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["leveling"]["over_allocated"][0]["resource"], "dev");
+    assert_eq!(d.text(), before);
+    let r = s.call(
+        "settings_set",
+        &args(json!({ "fields": { "leveling": "smoothing" } })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["leveling"]["mode"], "smoothing");
+    assert!(d.text().contains("leveling = \"smoothing\""));
 }
 
 #[test]

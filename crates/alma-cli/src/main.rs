@@ -169,6 +169,19 @@ enum Cmd {
     /// Project settings.
     #[command(subcommand)]
     Project(ProjectCmd),
+    /// Scheduling settings ([settings.schedule]).
+    #[command(subcommand)]
+    Settings(SettingsCmd),
+    /// Resolve resource over-allocation: `leveling` delays tasks until their resources fit
+    /// (the finish may move), `smoothing` only within free float, `off` turns it off.
+    /// The setting is saved in the plan; every later schedule is leveled.
+    Level {
+        /// leveling, smoothing or off.
+        #[arg(long, default_value = "leveling")]
+        mode: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
     /// Lint rule configuration for this plan.
     #[command(subcommand)]
     Rule(RuleCmd),
@@ -346,6 +359,21 @@ enum ProjectCmd {
 }
 
 #[derive(Subcommand)]
+enum SettingsCmd {
+    /// Set scheduling keys as KEY=VALUE (hours_per_day=8, late_anchor=deadline, phase=baselined,
+    /// leveling=smoothing, …; see `alma keys settings.schedule`).
+    Set {
+        /// KEY=VALUE pairs.
+        pairs: Vec<String>,
+        /// Remove a key, back to its default (repeatable).
+        #[arg(long)]
+        unset: Vec<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+}
+
+#[derive(Subcommand)]
 enum RuleCmd {
     /// Set a lint rule's severity for the whole plan (off, info, warn, error).
     Set {
@@ -414,6 +442,18 @@ enum ResCmd {
         max_units: Option<String>,
         #[command(flatten)]
         m: MutArgs,
+    },
+    /// List resources with their assigned tasks, booked hours and over-allocations.
+    Ls,
+    /// Demand vs capacity of one resource per period, and where it is over-allocated.
+    Usage {
+        /// Resource id.
+        id: String,
+        /// day, week or month.
+        #[arg(long, default_value = "week")]
+        period: String,
+        #[command(flatten)]
+        page: PageArgs,
     },
 }
 
@@ -847,6 +887,86 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             m.dry_run,
             json,
         ),
+        Cmd::Res(ResCmd::Ls) => {
+            let (_, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let rows =
+                alma_ops::resources::list(l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+            if json {
+                print_json(
+                    &serde_json::json!({ "schema": alma_ops::OUTPUT_SCHEMA, "resources": rows }),
+                );
+            } else {
+                for r in &rows {
+                    let over = if r.over_allocations > 0 {
+                        format!("\tOVER-ALLOCATED ({}x)", r.over_allocations)
+                    } else {
+                        String::new()
+                    };
+                    println!(
+                        "{}\t{}\tmax {}\t{} h\t{}{over}",
+                        r.id,
+                        r.kind,
+                        r.max_units,
+                        r.work_h,
+                        r.tasks.join(",")
+                    );
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Res(ResCmd::Usage { id, period, page }) => {
+            let (_, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let mut v = alma_ops::resources::usage(
+                l.plan.as_ref().unwrap(),
+                l.schedule.as_ref().unwrap(),
+                &id,
+                &period,
+            )
+            .map_err(Usage)?;
+            let (items, next) = Page::new(page.limit, page.cursor.as_deref()).apply(&v.periods);
+            let total = v.periods.len();
+            v.periods = items;
+            if json {
+                let mut out = serde_json::to_value(&v).expect("serializable");
+                out["total"] = total.into();
+                if let Some(n) = &next {
+                    out["next_cursor"] = n.clone().into();
+                }
+                print_json(&out);
+            } else {
+                println!(
+                    "{} (max {} units), per {}",
+                    v.resource, v.max_units, v.period
+                );
+                for b in &v.periods {
+                    let flag = if b.over_h > 0.0 { "  OVER" } else { "" };
+                    println!(
+                        "{}..{}\t{:>8} h of {:>8} h{flag}",
+                        b.start, b.end, b.demand_h, b.capacity_h
+                    );
+                }
+                for o in &v.over_allocated {
+                    println!(
+                        "over-allocated {}..{}: {} of {} units ({})",
+                        o.from,
+                        o.to,
+                        o.peak,
+                        o.max,
+                        o.tasks.join(", ")
+                    );
+                }
+                if let Some(n) = &next {
+                    println!("more: --cursor {n}");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Assign {
             task,
             resource,
@@ -1104,6 +1224,22 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             }
             mutation(file, &[Op::ProjectSet { fields }], m.dry_run, json)
         }
+        Cmd::Settings(SettingsCmd::Set { pairs, unset, m }) => {
+            let mut fields = BTreeMap::new();
+            for kv in pairs {
+                let (k, v) = kv
+                    .split_once('=')
+                    .ok_or_else(|| Usage(format!("expected KEY=VALUE, got `{kv}`")))?;
+                fields.insert(k.to_string(), FieldValue::Text(v.to_string()));
+            }
+            if fields.is_empty() && unset.is_empty() {
+                return Err(Usage("give KEY=VALUE pairs or --unset KEY".into()));
+            }
+            mutation(file, &[Op::SettingsSet { fields, unset }], m.dry_run, json)
+        }
+        Cmd::Level { mode, m } => {
+            mutation(file, &[Op::Level { mode: Some(mode) }], m.dry_run, json)
+        }
         Cmd::Rule(RuleCmd::Set { code, severity, m }) => {
             mutation(file, &[Op::RuleSet { code, severity }], m.dry_run, json)
         }
@@ -1222,6 +1358,29 @@ fn print_mutation(r: &MutationReport) {
     }
     if let Some(d) = &r.end_date_delta {
         println!("project finish: {d}");
+    }
+    if let Some(c) = &r.critical_path_changed {
+        if !c.added.is_empty() {
+            println!("now critical: {}", c.added.join(", "));
+        }
+        if !c.removed.is_empty() {
+            println!("no longer critical: {}", c.removed.join(", "));
+        }
+    }
+    if let Some(lv) = &r.leveling {
+        println!(
+            "leveling: {} (finish {} with logic alone, {} now)",
+            lv.mode, lv.unleveled_finish, lv.finish
+        );
+        for d in &lv.delayed {
+            println!(
+                "  {} delayed {}d to {}: waits for {} (busy with {})",
+                d.id, d.days, d.to, d.resource, d.waits_for
+            );
+        }
+        if !lv.unresolved.is_empty() {
+            println!("  could not resolve: {}", lv.unresolved.join(", "));
+        }
     }
     if !r.new_diagnostics.is_empty() {
         println!("new diagnostics:");

@@ -71,7 +71,8 @@ impl Page {
         }
     }
 
-    fn apply<T: Clone>(&self, items: &[T]) -> (Vec<T>, Option<String>) {
+    /// The items of this page, and the cursor of the next one.
+    pub fn apply<T: Clone>(&self, items: &[T]) -> (Vec<T>, Option<String>) {
         let start = self.offset.min(items.len());
         let end = start.saturating_add(self.limit).min(items.len());
         let next = (end < items.len()).then(|| end.to_string());
@@ -331,6 +332,15 @@ pub fn explain(plan: &Plan, schedule: &Schedule, id: &str) -> Option<Vec<Explain
                     Some(pred),
                 )
             }
+            Driver::Leveling { resource, by } => (
+                format!(
+                    "resource leveling: waits for `{}`, busy with `{}` until {}",
+                    plan.resources[resource].id,
+                    plan.tasks[by].id,
+                    format_instant(schedule.tasks[by].ef)
+                ),
+                Some(by),
+            ),
             Driver::Rollup | Driver::Span => ("derived".into(), None),
         };
         let mut because = because;

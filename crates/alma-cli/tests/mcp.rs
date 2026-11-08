@@ -78,7 +78,7 @@ fn handshake_versions_list_and_call() {
         assert_eq!(r[2]["result"]["isError"], false);
         assert_eq!(
             r[2]["result"]["structuredContent"]["project_finish"],
-            "2027-07-30"
+            "2027-09-24"
         );
         assert_eq!(
             r[3]["result"]["structuredContent"]["end_date_delta"],
@@ -158,7 +158,10 @@ fn official_sdk_client_in_both_lifecycles() {
             );
             let result = client.call_tool(params).await.unwrap();
             let v = serde_json::to_value(&result).unwrap();
-            assert_eq!(v["structuredContent"]["tf"], 10.0, "{expected}: {v}");
+            assert_eq!(
+                v["structuredContent"]["start"], "2027-05-17",
+                "{expected}: {v}"
+            );
             client.cancel().await.unwrap();
         });
     }

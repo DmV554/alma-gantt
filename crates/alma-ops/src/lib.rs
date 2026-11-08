@@ -6,6 +6,7 @@ pub mod export;
 pub mod files;
 pub mod mutate;
 pub mod query;
+pub mod resources;
 pub mod schema;
 
 /// The format key registry, for `alma keys`.

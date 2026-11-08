@@ -84,6 +84,7 @@ dependencies = [
  "alma-sched",
  "jiff",
  "proptest",
+ "rust_decimal",
  "serde",
  "serde_json",
  "toml_edit",

@@ -225,6 +225,54 @@ pub enum Op {
         /// New severity.
         severity: String,
     },
+    /// Set how the scheduler resolves resource over-allocation: `leveling` (default) delays
+    /// tasks until their resources fit and may move the finish; `smoothing` delays them only
+    /// within free float; `off` keeps logic dates and reports over-allocation.
+    #[serde(rename = "level")]
+    Level {
+        /// `leveling`, `smoothing` or `off`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+    },
+    /// Set or unset scheduling settings (`[settings.schedule]`).
+    #[serde(rename = "settings.set")]
+    SettingsSet {
+        /// Keys to set.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        fields: BTreeMap<String, FieldValue>,
+        /// Keys to remove (back to their defaults).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unset: Vec<String>,
+    },
+}
+
+/// Change of the critical path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CriticalChange {
+    /// Tasks now critical, source order.
+    pub added: Vec<String>,
+    /// Tasks no longer critical, source order.
+    pub removed: Vec<String>,
+}
+
+fn critical_set(l: &Loaded) -> Vec<String> {
+    match (&l.plan, &l.schedule) {
+        (Some(p), Some(s)) => p
+            .tasks
+            .iter()
+            .zip(&s.tasks)
+            .filter(|(_, d)| d.critical && d.in_network)
+            .map(|(t, _)| t.id.clone())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn critical_change(before: &Loaded, after: &Loaded) -> Option<CriticalChange> {
+    let (b, a) = (critical_set(before), critical_set(after));
+    let added: Vec<String> = a.iter().filter(|x| !b.contains(x)).cloned().collect();
+    let removed: Vec<String> = b.iter().filter(|x| !a.contains(x)).cloned().collect();
+    (!added.is_empty() || !removed.is_empty()).then_some(CriticalChange { added, removed })
 }
 
 /// A task whose dates moved.
@@ -254,6 +302,12 @@ pub struct MutationReport {
     /// Change of the project finish (`+3d`, `-1d`, `0d`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_date_delta: Option<String>,
+    /// Tasks that joined or left the critical path; absent when it did not change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_path_changed: Option<CriticalChange>,
+    /// What resource leveling did, when the batch changed the leveling mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leveling: Option<crate::resources::LevelingView>,
     /// Diagnostics that the change introduced.
     pub new_diagnostics: Vec<Diagnostic>,
     /// Why the batch was rejected (empty when `ok`).
@@ -269,6 +323,8 @@ impl MutationReport {
             noop: false,
             changed: Vec::new(),
             end_date_delta: None,
+            critical_path_changed: None,
+            leveling: None,
             new_diagnostics: Vec::new(),
             errors,
         }
@@ -333,6 +389,15 @@ pub fn apply(src: &str, ops: &[Op], dry_run: bool) -> (Option<String>, MutationR
         noop: text == src,
         changed: moved(&before, &after),
         end_date_delta: end_delta(&before, &after),
+        critical_path_changed: critical_change(&before, &after),
+        leveling: ops
+            .iter()
+            .any(|o| matches!(o, Op::Level { .. }) || matches!(o, Op::SettingsSet { fields, unset } if fields.contains_key("leveling") || unset.iter().any(|k| k == "leveling")))
+            .then(|| match (&after.plan, &after.schedule) {
+                (Some(p), Some(s)) => Some(crate::resources::leveling(p, s)),
+                _ => None,
+            })
+            .flatten(),
         new_diagnostics: new_diagnostics(&before, &after),
         errors: Vec::new(),
     };
@@ -589,6 +654,21 @@ fn to_item(key: &str, v: &FieldValue) -> Item {
             value(a)
         }
     }
+}
+
+/// A `[settings.schedule]` value: the day and week lengths are numbers, the rest strings.
+fn setting_item(key: &str, v: &FieldValue) -> Item {
+    if let FieldValue::Text(text) = v
+        && matches!(key, "hours_per_day" | "days_per_week")
+    {
+        if let Ok(n) = text.parse::<i64>() {
+            return value(n);
+        }
+        if let Ok(x) = text.parse::<f64>() {
+            return value(x);
+        }
+    }
+    to_item(key, v)
 }
 
 fn is_date_key(key: &str) -> bool {
@@ -1277,6 +1357,84 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
                 .as_table_mut()
                 .ok_or_else(|| op_err("E-OPS-04", "`rules.severity` is not a table", &[]))?;
             sev.insert(code, value(severity.as_str()));
+            if created {
+                alma_format::place_tables(doc);
+            }
+            Ok(())
+        }
+        Op::Level { mode } => {
+            let mode = mode.as_deref().unwrap_or("leveling");
+            if alma_core::model::Leveling::parse(mode).is_none() {
+                return Err(op_err(
+                    "E-OPS-04",
+                    format!("leveling mode `{mode}` must be leveling, smoothing or off"),
+                    &[],
+                ));
+            }
+            let mut fields = BTreeMap::new();
+            let mut unset = Vec::new();
+            if mode == "off" {
+                unset.push("leveling".to_string());
+            } else {
+                fields.insert("leveling".to_string(), FieldValue::Text(mode.to_string()));
+            }
+            apply_op(doc, &Op::SettingsSet { fields, unset })
+        }
+        Op::SettingsSet { fields, unset } => {
+            let allowed = |key: &str| matches!(keys::lookup("settings.schedule", key), Some(def) if !matches!(def.tier, keys::Tier::R(_)));
+            for key in fields.keys().chain(unset.iter()) {
+                if !allowed(key) {
+                    let known: Vec<&str> = keys::keys_of("settings.schedule")
+                        .filter(|k| !matches!(k.tier, keys::Tier::R(_)))
+                        .map(|k| k.key)
+                        .collect();
+                    return Err(op_err(
+                        "E-FMT-02",
+                        format!("`{key}` cannot be set on [settings.schedule]"),
+                        &[],
+                    )
+                    .with_hint(format!("[settings.schedule] takes: {}", known.join(", "))));
+                }
+            }
+            if fields.is_empty() {
+                // Only removals: never create the table for them.
+                if let Some(t) = doc
+                    .get_mut("settings")
+                    .and_then(Item::as_table_mut)
+                    .and_then(|s| s.get_mut("schedule"))
+                    .and_then(Item::as_table_mut)
+                {
+                    for key in unset {
+                        t.remove(key);
+                    }
+                }
+                return Ok(());
+            }
+            let created = doc
+                .get("settings")
+                .and_then(Item::as_table)
+                .and_then(|s| s.get("schedule"))
+                .is_none();
+            if doc.get("settings").is_none() {
+                let mut settings = Table::new();
+                settings.set_implicit(true);
+                doc.insert("settings", Item::Table(settings));
+            }
+            let settings = doc["settings"]
+                .as_table_mut()
+                .ok_or_else(|| op_err("E-OPS-04", "`settings` is not a table", &[]))?;
+            if settings.get("schedule").is_none() {
+                settings.insert("schedule", Item::Table(new_table()));
+            }
+            let t = settings["schedule"]
+                .as_table_mut()
+                .ok_or_else(|| op_err("E-OPS-04", "`settings.schedule` is not a table", &[]))?;
+            for key in unset {
+                t.remove(key);
+            }
+            for (key, v) in fields {
+                insert_canonical(t, "settings.schedule", key, setting_item(key, v));
+            }
             if created {
                 alma_format::place_tables(doc);
             }

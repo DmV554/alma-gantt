@@ -10,14 +10,17 @@ use std::collections::{BinaryHeap, HashMap};
 use alma_core::diag::Diagnostic;
 use alma_core::duration::Duration;
 use alma_core::model::{
-    Calendar, ConstraintKind, CriticalDefinition, DepType, Dist, LagCalendar, LateAnchor, Plan,
-    SchedType, TaskKind,
+    Calendar, ConstraintKind, CriticalDefinition, DepType, Dist, LagCalendar, LateAnchor, Leveling,
+    Plan, SchedType, TaskKind,
 };
 use alma_core::time::{DAY, Instant, start_of};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
 use crate::calendar::WorkCalendar;
+pub use crate::level::{Delay, LevelingReport};
+use crate::level::{Early, Leveled, Sgs, level};
+use crate::resources::Pool;
 
 /// What set a task's early start (F-SCH-11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +43,14 @@ pub enum Driver {
     Rollup,
     /// Derived from the spanned tasks (level of effort).
     Span,
+    /// Delayed by resource leveling: `resource` (index in `plan.resources`) was busy with
+    /// task `by` until this start.
+    Leveling {
+        /// Resource index.
+        resource: usize,
+        /// The task holding the resource.
+        by: usize,
+    },
 }
 
 /// Computed dates and floats for one task. Floats are working minutes on the task's calendar.
@@ -80,17 +91,30 @@ pub struct Schedule {
     pub anchor: Instant,
     /// Diagnostics found while scheduling (they never stop it).
     pub diagnostics: Vec<Diagnostic>,
+    /// What leveling did, when `settings.schedule.leveling` is on and some task has a
+    /// leveled resource.
+    pub leveling: Option<LevelingReport>,
 }
 
 /// One expanded link between two network leaves.
 #[derive(Debug, Clone, Copy)]
-struct Edge {
-    pred: usize,
-    succ: usize,
+pub(crate) struct Edge {
+    pub(crate) pred: usize,
+    pub(crate) succ: usize,
     kind: DepType,
     lag: Duration,
     owner: usize,
     dep: usize,
+}
+
+/// Late dates and floats over one set of early dates.
+struct Late {
+    finish: Instant,
+    anchor: Instant,
+    ls: Vec<Instant>,
+    lf: Vec<Instant>,
+    total: Vec<Option<i64>>,
+    free: Vec<Option<i64>>,
 }
 
 /// Index structures over a plan, shared with lint.
@@ -244,6 +268,11 @@ impl Calendars {
         &self.project
     }
 
+    /// A calendar by id.
+    pub fn by_id(&self, id: &str) -> Option<&WorkCalendar> {
+        self.by_id.get(id)
+    }
+
     /// The calendar of a task (its override, or the project calendar).
     pub fn of_task(&self, plan: &Plan, i: usize) -> &WorkCalendar {
         plan.tasks[i]
@@ -370,12 +399,9 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
     };
 
     let project_start = cals.project().next_start(start_of(plan.project.start));
-    let mut es = vec![project_start; n];
-    let mut ef = vec![project_start; n];
-    let mut driver = vec![Driver::ProjectStart; n];
 
-    // Forward pass (F-SCH-06).
-    for &j in &order {
+    // The earliest start that logic and constraints allow (F-SCH-06), before snapping.
+    let earliest = |j: usize, es: &[Instant], ef: &[Instant]| -> (Instant, Driver) {
         let mut best = start_of(plan.project.start);
         let mut why = Driver::ProjectStart;
         for &e in &incoming[j] {
@@ -425,20 +451,24 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
             }
         }
         let snap = durations[j].minutes > 0 || !matches!(why, Driver::Dep { .. });
-        es[j] = if snap {
+        let start = if snap {
             cals.of_task(plan, j).next_start(best)
         } else {
             best
         };
-        ef[j] = dur_add(j, es[j]);
+        (start, why)
+    };
+
+    // Forward pass (F-SCH-06).
+    let mut es = vec![project_start; n];
+    let mut ef = vec![project_start; n];
+    let mut driver = vec![Driver::ProjectStart; n];
+    for &j in &order {
+        let (start, why) = earliest(j, &es, &ef);
+        es[j] = start;
+        ef[j] = dur_add(j, start);
         driver[j] = why;
     }
-
-    let finish = order.iter().map(|&i| ef[i]).max().unwrap_or(project_start);
-    let anchor = match (plan.settings.late_anchor, plan.project.deadline) {
-        (LateAnchor::Deadline, Some(d)) => cals.project().prev_end(start_of(d) + DAY),
-        _ => finish,
-    };
 
     // Deadlines on summaries apply to their leaves.
     let mut deadline: Vec<Option<Instant>> = vec![None; n];
@@ -451,72 +481,159 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
         }
     }
 
-    // Backward pass (F-SCH-07).
-    let mut ls = vec![anchor; n];
-    let mut lf = vec![anchor; n];
-    for &i in order.iter().rev() {
-        let mut best = anchor;
-        for &e in &outgoing[i] {
-            let edge = &edges[e];
-            let term = match edge.kind {
-                DepType::Fs => lag_sub(edge, ls[edge.succ]),
-                DepType::Ss => dur_add(i, lag_sub(edge, ls[edge.succ])),
-                DepType::Ff => lag_sub(edge, lf[edge.succ]),
-                DepType::Sf => dur_add(i, lag_sub(edge, lf[edge.succ])),
-            };
-            best = best.min(term);
-        }
-        if let Some(c) = &plan.tasks[i].constraint
-            && let Some(date) = c.date
-        {
-            match c.kind {
-                ConstraintKind::Fnlt | ConstraintKind::Mfo => {
-                    best = best.min(date_end(i, date));
-                }
-                ConstraintKind::Snlt | ConstraintKind::Mso => {
-                    best = best.min(dur_add(i, date_start(i, date)));
-                }
-                _ => {}
+    // Backward pass (F-SCH-07) and floats (F-SCH-08, F-SCH-09) over given early dates.
+    let late = |es: &[Instant],
+                ef: &[Instant],
+                order: &[usize],
+                edges: &[Edge],
+                outgoing: &[Vec<usize>]|
+     -> Late {
+        let finish = order.iter().map(|&i| ef[i]).max().unwrap_or(project_start);
+        let anchor = match (plan.settings.late_anchor, plan.project.deadline) {
+            (LateAnchor::Deadline, Some(d)) => cals.project().prev_end(start_of(d) + DAY),
+            _ => finish,
+        };
+        let mut ls = vec![anchor; n];
+        let mut lf = vec![anchor; n];
+        for &i in order.iter().rev() {
+            let mut best = anchor;
+            for &e in &outgoing[i] {
+                let edge = &edges[e];
+                let term = match edge.kind {
+                    DepType::Fs => lag_sub(edge, ls[edge.succ]),
+                    DepType::Ss => dur_add(i, lag_sub(edge, ls[edge.succ])),
+                    DepType::Ff => lag_sub(edge, lf[edge.succ]),
+                    DepType::Sf => dur_add(i, lag_sub(edge, lf[edge.succ])),
+                };
+                best = best.min(term);
             }
-        }
-        if let Some(d) = deadline[i] {
-            best = best.min(d);
-        }
-        lf[i] = if durations[i].minutes > 0 {
-            cals.of_task(plan, i).prev_end(best)
-        } else {
-            best
-        };
-        ls[i] = dur_sub(i, lf[i]);
-    }
-
-    // Floats (F-SCH-08, F-SCH-09).
-    let mut total = vec![None; n];
-    let mut free = vec![None; n];
-    for &i in &order {
-        let cal = cals.of_task(plan, i);
-        total[i] = Some(cal.between(es[i], ls[i]).min(cal.between(ef[i], lf[i])));
-        let mut ff = if outgoing[i].is_empty() {
-            cal.between(ef[i], anchor)
-        } else {
-            i64::MAX
-        };
-        for &e in &outgoing[i] {
-            let edge = &edges[e];
-            let slack = match edge.kind {
-                DepType::Fs => cal.between(ef[i], lag_sub(edge, es[edge.succ])),
-                DepType::Ss => cal.between(es[i], lag_sub(edge, es[edge.succ])),
-                DepType::Ff => cal.between(ef[i], lag_sub(edge, ef[edge.succ])),
-                DepType::Sf => cal.between(es[i], lag_sub(edge, ef[edge.succ])),
+            if let Some(c) = &plan.tasks[i].constraint
+                && let Some(date) = c.date
+            {
+                match c.kind {
+                    ConstraintKind::Fnlt | ConstraintKind::Mfo => {
+                        best = best.min(date_end(i, date));
+                    }
+                    ConstraintKind::Snlt | ConstraintKind::Mso => {
+                        best = best.min(dur_add(i, date_start(i, date)));
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(d) = deadline[i] {
+                best = best.min(d);
+            }
+            lf[i] = if durations[i].minutes > 0 {
+                cals.of_task(plan, i).prev_end(best)
+            } else {
+                best
             };
-            ff = ff.min(slack);
+            ls[i] = dur_sub(i, lf[i]);
         }
-        // Free float is part of total float. F-SCH-09 only looks at successors, so with SS/SF
-        // links a task that also drives the project finish could get FF > TF; cap it (our
-        // interpretation, needed for 0 <= FF <= TF).
-        let tf = total[i].unwrap_or(0);
-        free[i] = Some(ff.min(tf).max(0));
+        let mut total = vec![None; n];
+        let mut free = vec![None; n];
+        for &i in order {
+            let cal = cals.of_task(plan, i);
+            total[i] = Some(cal.between(es[i], ls[i]).min(cal.between(ef[i], lf[i])));
+            let mut ff = if outgoing[i].is_empty() {
+                cal.between(ef[i], anchor)
+            } else {
+                i64::MAX
+            };
+            for &e in &outgoing[i] {
+                let edge = &edges[e];
+                let slack = match edge.kind {
+                    DepType::Fs => cal.between(ef[i], lag_sub(edge, es[edge.succ])),
+                    DepType::Ss => cal.between(es[i], lag_sub(edge, es[edge.succ])),
+                    DepType::Ff => cal.between(ef[i], lag_sub(edge, ef[edge.succ])),
+                    DepType::Sf => cal.between(es[i], lag_sub(edge, ef[edge.succ])),
+                };
+                ff = ff.min(slack);
+            }
+            // Free float is part of total float. F-SCH-09 only looks at successors, so with
+            // SS/SF links a task that also drives the project finish could get FF > TF; cap it
+            // (our interpretation, needed for 0 <= FF <= TF).
+            let tf = total[i].unwrap_or(0);
+            free[i] = Some(ff.min(tf).max(0));
+        }
+        Late {
+            finish,
+            anchor,
+            ls,
+            lf,
+            total,
+            free,
+        }
+    };
+    let mut lt = late(&es, &ef, &order, &edges, &outgoing);
+
+    // Resource leveling or smoothing (SPEC.md §7.4, ADR 0011): a serial schedule generation
+    // pass over the logic network, in priority order, that delays tasks until their resources
+    // fit.
+    let mut leveling = None;
+    if plan.settings.leveling != Leveling::Off {
+        let pool = Pool::new(plan);
+        if pool.any_assigned(&in_network) {
+            let unleveled_finish = lt.finish;
+            let Leveled {
+                delays,
+                unresolved,
+                placed,
+            } = level(
+                plan,
+                &cals,
+                &pool,
+                &Sgs {
+                    order: &order,
+                    edges: &edges,
+                    outgoing: &outgoing,
+                    incoming: &incoming,
+                    durations: &durations,
+                    total: &lt.total,
+                    free: &lt.free,
+                    lf: &lt.lf,
+                },
+                &mut Early {
+                    es: &mut es,
+                    ef: &mut ef,
+                    driver: &mut driver,
+                },
+                &earliest,
+                &dur_add,
+            );
+            // A delayed task now depends on the task that held its resource: add that as a
+            // finish-to-start link for the backward pass, so float and the critical path
+            // account for resources (the resource-constrained critical path; ADR 0011).
+            let mut all_edges = edges.clone();
+            let mut all_out = outgoing.clone();
+            for d in &delays {
+                all_out[d.by].push(all_edges.len());
+                all_edges.push(Edge {
+                    pred: d.by,
+                    succ: d.task,
+                    kind: DepType::Fs,
+                    lag: Duration::ZERO,
+                    owner: d.task,
+                    dep: usize::MAX,
+                });
+            }
+            lt = late(&es, &ef, &placed, &all_edges, &all_out);
+            leveling = Some(LevelingReport {
+                mode: plan.settings.leveling,
+                unleveled_finish,
+                delays,
+                unresolved,
+            });
+        }
     }
+    let Late {
+        finish,
+        anchor,
+        ls,
+        lf,
+        total,
+        free,
+    } = lt;
 
     // Critical set (F-SCH-10).
     let theta = plan.settings.critical_threshold.minutes;
@@ -579,6 +696,7 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
         finish,
         anchor,
         diagnostics,
+        leveling,
     })
 }
 

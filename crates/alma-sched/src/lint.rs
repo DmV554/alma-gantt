@@ -8,14 +8,15 @@ use std::collections::HashSet;
 
 use alma_core::diag::{Diagnostic, Severity};
 use alma_core::model::{
-    Approach, ConstraintKind, DepNature, DepScope, DepType, MilestoneClass, ParamValue, Phase,
-    Plan, ReportingPeriod, SchedType, TaskKind, WbsRole,
+    Approach, ConstraintKind, DepNature, DepScope, DepType, Leveling, MilestoneClass, ParamValue,
+    Phase, Plan, ReportingPeriod, SchedType, TaskKind, WbsRole,
 };
-use alma_core::time::format_instant;
+use alma_core::time::{finish_date, format_instant, start_date};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
 use crate::cpm::{Calendars, PlanIndex, Schedule, resolve_duration};
+use crate::resources;
 
 /// A lint rule.
 #[derive(Debug, Clone, Copy)]
@@ -99,6 +100,16 @@ pub const RULES: &[Rule] = &[
         "L-EST-09",
         Some(I),
         "Duration outside the three-point range",
+    ),
+    rule(
+        "L-RES-01",
+        Some(W),
+        "Resource booked above its capacity (error once leveling is on)",
+    ),
+    rule(
+        "L-RES-02",
+        Some(W),
+        "Smoothing left an over-allocation it could not resolve within free float",
     ),
     rule(
         "L-SCH-01",
@@ -741,6 +752,54 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                     ),
                     vec![id.clone()],
                 );
+            }
+        }
+    }
+
+    // Resources (F-COST-04).
+    if let Some(s) = schedule {
+        for o in resources::overloads(plan, s) {
+            let r = &plan.resources[o.resource];
+            let tasks: Vec<String> = o.tasks.iter().map(|&t| plan.tasks[t].id.clone()).collect();
+            let (code, sev, hint) = match plan.settings.leveling {
+                Leveling::Off => (
+                    "L-RES-01",
+                    W,
+                    "let the scheduler resolve it with `alma level` (the finish may move) or \
+                     `alma level --mode smoothing` (only within free float); or lower the units, \
+                     raise max_units, or add a dependency between the competing tasks",
+                ),
+                Leveling::Leveling => (
+                    "L-RES-01",
+                    E,
+                    "leveling cannot fix this: one assignment is above max_units, or tasks with \
+                     fixed dates (MSO/MFO) or level-of-effort tasks overlap; lower the units or \
+                     raise max_units",
+                ),
+                Leveling::Smoothing => (
+                    "L-RES-02",
+                    W,
+                    "there is no room within free float; `alma level --mode leveling` resolves it \
+                     by letting the finish move",
+                ),
+            };
+            let mut ids = vec![r.id.clone()];
+            ids.extend(tasks.iter().cloned());
+            let msg = format!(
+                "`{}` is booked {} of {} units from {} to {} ({})",
+                r.id,
+                o.peak.normalize(),
+                o.max.normalize(),
+                start_date(o.from),
+                finish_date(o.to),
+                tasks.join(", ")
+            );
+            let before = l.out.len();
+            l.report(usize::MAX, code, sev, msg, ids);
+            if l.out.len() > before
+                && let Some((_, d)) = l.out.last_mut()
+            {
+                *d = d.clone().with_hint(hint);
             }
         }
     }

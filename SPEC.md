@@ -340,7 +340,7 @@ alma res add dev --name Developer --rate 4.2/day --max 6
 alma assign gate-build dev --units 3
 alma iter add s01 --start 2027-03-01 --length 10d --repeat 12   # sprint calendar
 alma baseline save "Informe 3"
-alma level --rule least-float --within-float
+alma level --mode leveling                  # or smoothing (within free float); ADR 0011
 ```
 
 Queries and verification (read-only):

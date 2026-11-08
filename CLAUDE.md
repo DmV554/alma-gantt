@@ -13,7 +13,10 @@ tool, with agents doing most of the planning and humans able to edit anything by
 ## Current state
 
 - Milestones: **M0** (engine, file format, agent CLI) and **M0.5** (MCP server, `alma mcp`,
-  ADR 0010) are done. Next is M1 (desktop editor). See `SPEC.md` §5.
+  ADR 0010) are done. **M2** (resources, costs, leveling) is in progress ahead of M1, so agents
+  get resource and cost checks before the desktop editor exists. See `SPEC.md` §5.
+- M2 so far: resource usage and over-allocation (`L-RES-01/02`, `alma res ls|usage`), leveling
+  and smoothing as a schedule setting (`alma level`, ADR 0011), `settings.set`.
 - Implemented: model and durations (`alma-core`), calendars, CPM and the M0 lint rules
   (`alma-sched`), the parser with the key registry (`alma-format`), queries and lossless
   mutations (`alma-ops`), and the CLI with the agent contract (`alma-cli`). The fixture schedules
@@ -23,8 +26,8 @@ tool, with agents doing most of the planning and humans able to edit anything by
 - Also done: `alma fmt`, `alma diff`, calendar/project/rule/cadence commands, `alma keys`, and
   the M0 acceptance test: a recorded agent session (`crates/alma-cli/tests/acceptance/`) that
   built the hybrid plan from a written brief using only `alma guide`, replayed in CI.
-- Known gaps, by design until later milestones: no resource over-allocation check or leveling
-  (M2), tasks cannot be linked to sprints (M4), text widths are estimated (ADR 0009).
+- Known gaps, by design until later milestones: no costs, baselines or S-curve yet (rest of
+  M2), tasks cannot be linked to sprints (M4), text widths are estimated (ADR 0009).
 - `docs/format.md` is the normative reference for plan files (ADRs 0005–0008). Read it before
   touching `alma-format` or the model.
 - `examples/hybrid-terminal.alma.toml` is the **target fixture** for M0; making it parse,
@@ -37,7 +40,7 @@ tool, with agents doing most of the planning and humans able to edit anything by
 | Path | What it is |
 |---|---|
 | `SPEC.md` | Product and technical spec. The source of truth |
-| `docs/adr/` | Architecture decisions (0001–0010 accepted). Template: `0000-template.md` |
+| `docs/adr/` | Architecture decisions (0001–0011 accepted). Template: `0000-template.md` |
 | `docs/format.md` | Normative reference of the plan file format |
 | `docs/knowledge/` | Project-management reference notes from PMBOK 6, the WBS standard, the Agile Practice Guide and estimation sources. Each concept maps to model fields, engine behavior, lint rules (Annex A) and formulas (Annex B) |
 | `crates/alma-core` | Domain model: no I/O, no UI |

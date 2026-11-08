@@ -182,6 +182,12 @@ fn op_description(op: &str) -> &'static str {
         "cal.add" => "Add a working calendar (workdays, hours like 09:00-13:00).",
         "cal.except" => "Add a holiday or blackout period to a calendar (dates inclusive).",
         "rule.set" => "Set a lint rule's severity for this plan (off, info, warn, error).",
+        "level" => {
+            "Resolve resource over-allocation: mode `leveling` delays tasks until their resources fit (the finish may move), `smoothing` only within free float, `off` turns it off. Saved in the plan; the result lists delayed tasks and what each waits for."
+        }
+        "settings.set" => {
+            "Set or unset scheduling settings ([settings.schedule]): hours_per_day, days_per_week, late_anchor, critical_threshold, near_critical, phase, leveling, …"
+        }
         _ => "Plan operation.",
     }
 }
@@ -235,6 +241,24 @@ pub fn tools() -> Vec<Tool> {
             "explain",
             "Why a task starts when it does: the chain of driving links, constraints and calendar exceptions.",
             schema(json!({ "id": { "type": "string" } }), &["id"]),
+        )),
+        read_only(Tool::new(
+            "list_resources",
+            "Resources with their kind, capacity, rate, assigned tasks, booked hours and how many over-allocated stretches each has.",
+            schema(json!({}), &[]),
+        )),
+        read_only(Tool::new(
+            "resource_usage",
+            "Demand vs capacity of one resource per period (hours), and the exact stretches where it is over-allocated with the competing tasks. Use it to check a fix.",
+            schema(
+                json!({
+                    "id": { "type": "string", "description": "Resource id" },
+                    "period": { "enum": ["day", "week", "month"], "description": "Default week" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "cursor": { "type": "string" },
+                }),
+                &["id"],
+            ),
         )),
         read_only(Tool::new(
             "diff",
@@ -478,6 +502,32 @@ impl AlmaServer {
                     }
                     None => Outcome::error("E-OPS-02", format!("no task with id `{id}`")),
                 }
+            }
+            "list_resources" => {
+                let (_, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                Outcome::ok(json!({
+                    "schema": alma_ops::OUTPUT_SCHEMA,
+                    "resources": alma_ops::resources::list(plan, s),
+                }))
+            }
+            "resource_usage" => {
+                let (_, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let id = str_arg(args, "id").unwrap_or_default();
+                let period = str_arg(args, "period").unwrap_or("week");
+                let mut v = alma_ops::resources::usage(plan, s, id, period)
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                let page = Page::new(usize_arg(args, "limit"), str_arg(args, "cursor"));
+                let total = v.periods.len();
+                let (items, next) = page.apply(&v.periods);
+                v.periods = items;
+                let mut out = serde_json::to_value(&v).unwrap_or(Value::Null);
+                out["total"] = total.into();
+                if let Some(n) = next {
+                    out["next_cursor"] = n.into();
+                }
+                Outcome::ok(out)
             }
             "diff" => {
                 let path = self.plan_path(args)?;

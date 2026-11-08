@@ -143,6 +143,7 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 | `reporting_period` | B | `week \| month` | `month` | Used by `L-WBS-06` and later by EVM |
 | `rolling_wave_horizon` | B | duration | none | Used by `L-WBS-11` |
 | `three_point` | A | `beta \| triangular` | `beta` | Formula for tE (F-SCH-03/04) |
+| `leveling` | A | `off \| smoothing \| leveling` | `off` | How the scheduler resolves resource over-allocation (ADR 0011). `smoothing` delays tasks within their free float only; `leveling` may move the finish date |
 | `progress_logic`, `agile_drives`, `control_threshold` | R (M4) | | | |
 
 `[settings.cost]` is reserved (R, M2).

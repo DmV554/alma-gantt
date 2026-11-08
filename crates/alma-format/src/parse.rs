@@ -540,6 +540,9 @@ fn read_settings(cx: &mut Cx, root: &toml_edit::Table) -> ScheduleSettings {
     if let Some(v) = f.enumerated(cx, "three_point", Dist::parse, Dist::VALUES) {
         s.three_point = v;
     }
+    if let Some(v) = f.enumerated(cx, "leveling", Leveling::parse, Leveling::VALUES) {
+        s.leveling = v;
+    }
     s
 }
 
