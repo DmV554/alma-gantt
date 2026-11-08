@@ -384,6 +384,33 @@ fn op_err(code: &'static str, msg: impl Into<String>, ids: &[&str]) -> Diagnosti
 /// Applies a batch to plan text. Returns the new text and the report; on rejection the text
 /// is `None` and the report lists the errors.
 pub fn apply(src: &str, ops: &[Op], dry_run: bool) -> (Option<String>, MutationReport) {
+    let leveling = ops.iter().any(|o| {
+        matches!(o, Op::Level { .. })
+            || matches!(o, Op::SettingsSet { fields, unset }
+                if fields.contains_key("leveling") || unset.iter().any(|k| k == "leveling"))
+    });
+    apply_edit(src, dry_run, leveling, |doc| {
+        for (n, op) in ops.iter().enumerate() {
+            if let Err(mut e) = apply_op(doc, op) {
+                if ops.len() > 1 {
+                    e.message = format!("operation #{}: {}", n + 1, e.message);
+                }
+                return Err(e);
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Applies any document edit with the same guarantees as [`apply`]: the plan must load
+/// before, the result must have no hard error, and the report says what moved. With
+/// `leveling`, the report includes the leveling summary.
+pub fn apply_edit(
+    src: &str,
+    dry_run: bool,
+    leveling: bool,
+    edit: impl FnOnce(&mut DocumentMut) -> Result<(), Diagnostic>,
+) -> (Option<String>, MutationReport) {
     let before = load(src);
     if before.plan.is_none() {
         let errors: Vec<Diagnostic> = before
@@ -409,13 +436,8 @@ pub fn apply(src: &str, ops: &[Op], dry_run: bool) -> (Option<String>, MutationR
             return (None, MutationReport::rejected(vec![d], dry_run));
         }
     };
-    for (n, op) in ops.iter().enumerate() {
-        if let Err(mut e) = apply_op(&mut doc, op) {
-            if ops.len() > 1 {
-                e.message = format!("operation #{}: {}", n + 1, e.message);
-            }
-            return (None, MutationReport::rejected(vec![e], dry_run));
-        }
+    if let Err(e) = edit(&mut doc) {
+        return (None, MutationReport::rejected(vec![e], dry_run));
     }
     let text = doc.to_string();
     let after = load(&text);
@@ -437,9 +459,7 @@ pub fn apply(src: &str, ops: &[Op], dry_run: bool) -> (Option<String>, MutationR
         end_date_delta: end_delta(&before, &after),
         cost_delta: cost_delta(&before, &after),
         critical_path_changed: critical_change(&before, &after),
-        leveling: ops
-            .iter()
-            .any(|o| matches!(o, Op::Level { .. }) || matches!(o, Op::SettingsSet { fields, unset } if fields.contains_key("leveling") || unset.iter().any(|k| k == "leveling")))
+        leveling: leveling
             .then(|| match (&after.plan, &after.schedule) {
                 (Some(p), Some(s)) => Some(crate::resources::leveling(p, s)),
                 _ => None,
@@ -479,9 +499,18 @@ pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     }
 }
 
+/// Logs a command that is not a batch operation (`baseline.save`).
+pub(crate) fn log_command(path: &Path, op: &str, id: &str) {
+    append_log_value(path, serde_json::json!([{ "op": op, "id": id }]));
+}
+
 /// Appends the batch to `.alma/log.jsonl` next to the plan. Failures are ignored: the log is
 /// for review, git is the history.
 fn append_log(path: &Path, ops: &[Op]) {
+    append_log_value(path, serde_json::json!(ops));
+}
+
+fn append_log_value(path: &Path, ops: serde_json::Value) {
     use std::io::Write;
     let dir = path
         .parent()
@@ -701,6 +730,83 @@ fn to_item(key: &str, v: &FieldValue) -> Item {
             value(a)
         }
     }
+}
+
+/// Metadata of a new baseline (`alma baseline save`).
+#[derive(Debug, Clone, Default)]
+pub struct BaselineMeta {
+    /// Id.
+    pub id: String,
+    /// Name.
+    pub name: Option<String>,
+    /// Day it is saved, `YYYY-MM-DD`.
+    pub date: String,
+    /// Change request.
+    pub change_ref: Option<String>,
+    /// Reason.
+    pub reason: Option<String>,
+    /// Approver.
+    pub approved_by: Option<String>,
+}
+
+/// Adds a `[[baseline]]` table, makes it the only active one, and links it to the previously
+/// active baseline as its parent. Refuses an existing id: baselines are never overwritten.
+pub(crate) fn add_baseline(doc: &mut DocumentMut, m: &BaselineMeta) -> Result<(), Diagnostic> {
+    let date: toml_edit::Datetime = m.date.parse().map_err(|_| {
+        op_err(
+            "E-OPS-04",
+            format!("`{}` is not a date like 2027-01-04", m.date),
+            &[&m.id],
+        )
+    })?;
+    let mut parent = None;
+    if let Some(aot) = doc
+        .get_mut("baseline")
+        .and_then(Item::as_array_of_tables_mut)
+    {
+        if aot
+            .iter()
+            .any(|b| b.get("id").and_then(Item::as_str) == Some(m.id.as_str()))
+        {
+            return Err(op_err(
+                "E-OPS-01",
+                format!(
+                    "baseline `{}` already exists; baselines are never overwritten",
+                    m.id
+                ),
+                &[&m.id],
+            )
+            .with_hint(
+                "save a new baseline with another id, e.g. `<id>-r2`, and a --change reference",
+            ));
+        }
+        for b in aot.iter_mut() {
+            if b.get("active").and_then(Item::as_bool) == Some(true) {
+                parent = b.get("id").and_then(Item::as_str).map(str::to_string);
+                b.remove("active");
+            }
+        }
+    }
+    let mut t = new_table();
+    t.insert("id", value(m.id.as_str()));
+    if let Some(n) = &m.name {
+        t.insert("name", value(n.as_str()));
+    }
+    t.insert("date", value(date));
+    t.insert("active", value(true));
+    if let Some(p) = parent {
+        t.insert("parent", value(p));
+    }
+    for (k, v) in [
+        ("change_ref", &m.change_ref),
+        ("reason", &m.reason),
+        ("approved_by", &m.approved_by),
+    ] {
+        if let Some(v) = v {
+            t.insert(k, value(v.as_str()));
+        }
+    }
+    push_top_table(doc, "baseline", &m.id, t)
 }
 
 /// The keys of a resource given on the command line, validated, in canonical order.

@@ -267,8 +267,19 @@ pub struct Point {
 /// Cost per period and cumulative, from the project start to the finish. From the current
 /// schedule this is a forecast, not planned value (PV comes from a baseline).
 pub fn curve(plan: &Plan, schedule: &Schedule, costs: &Costs, period: Period) -> Vec<Point> {
+    curve_over(plan, schedule, costs, period, None)
+}
+
+/// Like [`curve`], over at least `[from, to)` as well (to line it up with a baseline).
+pub fn curve_over(
+    plan: &Plan,
+    schedule: &Schedule,
+    costs: &Costs,
+    period: Period,
+    widen: Option<(Instant, Instant)>,
+) -> Vec<Point> {
     let cals = Calendars::new(plan);
-    let first = costs
+    let mut first = costs
         .lines
         .iter()
         .map(|l| match l.accrual {
@@ -279,7 +290,11 @@ pub fn curve(plan: &Plan, schedule: &Schedule, costs: &Costs, period: Period) ->
         .unwrap_or(schedule.start)
         .min(schedule.start);
     // A cost at the finish instant (an end accrual) belongs to the period that contains it.
-    let last = schedule.finish + 1;
+    let mut last = schedule.finish + 1;
+    if let Some((a, b)) = widen {
+        first = first.min(a);
+        last = last.max(b);
+    }
     let mut cumulative = Decimal::ZERO;
     period
         .buckets(first, last)

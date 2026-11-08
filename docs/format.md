@@ -263,7 +263,23 @@ capacity and velocity are reserved (R, M4).
 
 ### 6.8 Other reserved top-level items (R)
 `[[release]]` (M4), `[[reserve]]` (M2), `[[risk]]` (M2), `[[funding]]` (M2), `[[contract]]` (M3),
-`[[scenario]]` (M2), `[[cashflow_item]]` (M2), `[[baseline]]` (M2, D14), `[ucp]` (later).
+`[[scenario]]` (M2), `[[cashflow_item]]` (M2), `[ucp]` (later).
+
+### 6.9 `[[baseline]]` (tier A)
+Metadata of a saved baseline (D14, ADR 0013). `alma baseline save` writes it together with the
+frozen dates and costs, which go to `.alma/baselines/<plan>/<id>.toml` next to the plan file.
+Commit that directory with the plan.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `id` | id | required | Joins the global id namespace |
+| `name` | string | id | |
+| `date` | date | none | The day it was saved |
+| `active` | boolean | `false` | The baseline reports compare against by default. At most one (`E-FMT-03`) |
+| `parent` | baseline id | none | The baseline this one revises |
+| `change_ref` | string | none | Change request that approved it; a revision without one is `L-BAS-05` |
+| `reason` | string | none | |
+| `approved_by` | string | none | |
 
 ---
 

@@ -1,6 +1,7 @@
 //! Scheduling engine: working-time arithmetic, CPM, constraints, leveling and smoothing,
 //! costs, earned value and diagnostics. Pure functions over `alma-core` (SPEC.md §7).
 
+pub mod baseline;
 pub mod calendar;
 pub mod cost;
 pub mod cpm;

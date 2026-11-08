@@ -55,6 +55,9 @@ fn every_tool_has_a_standalone_object_schema() {
         "res_set",
         "cost",
         "scurve",
+        "baseline_save",
+        "baseline_list",
+        "variance",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
@@ -191,6 +194,24 @@ fn resources_and_leveling() {
         &args(json!({ "id": "dev", "rate": "5/day", "dry_run": true })),
     );
     assert!(!r.is_error, "{}", r.json);
+
+    let r = s.call("variance", &args(json!({})));
+    assert!(r.is_error, "no baseline yet");
+    let r = s.call(
+        "baseline_save",
+        &args(json!({ "id": "b1", "date": "2026-12-15" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["baseline"]["bac"], 4714.5);
+    let r = s.call("baseline_save", &args(json!({ "id": "b1" })));
+    assert!(r.is_error);
+    let r = s.call("baseline_list", &args(json!({})));
+    assert_eq!(r.json["baselines"][0]["id"], "b1");
+    let r = s.call("variance", &args(json!({ "changed": true })));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["total"], 0);
+    let r = s.call("scurve", &args(json!({})));
+    assert_eq!(r.json["baseline"], "b1");
 }
 
 #[test]

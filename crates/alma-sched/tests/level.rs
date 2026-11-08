@@ -40,6 +40,7 @@ fn plan(tasks: Vec<Task>, resources: &[(&str, i64)]) -> Plan {
             .collect(),
         cadences: Vec::new(),
         tasks,
+        baselines: Vec::new(),
     }
 }
 

@@ -276,12 +276,50 @@ pub fn tools() -> Vec<Tool> {
         )),
         read_only(Tool::new(
             "scurve",
-            "Cost per period and cumulative for the current schedule (a forecast curve; planned value needs a baseline).",
+            "Cost per period and cumulative for the current schedule (a forecast), with planned value (pv) from the active baseline when there is one.",
             schema(
-                json!({ "period": { "enum": ["day", "week", "month"], "description": "Default month" } }),
+                json!({
+                    "period": { "enum": ["day", "week", "month"], "description": "Default month" },
+                    "baseline": { "type": "string", "description": "Baseline for pv (default: the active one)" },
+                }),
                 &[],
             ),
         )),
+        read_only(Tool::new(
+            "baseline_list",
+            "Saved baselines with the finish date and budget each one promised; one is active.",
+            schema(json!({}), &[]),
+        )),
+        read_only(Tool::new(
+            "variance",
+            "How the current schedule differs from a baseline: finish and cost, and per task start/finish variance in working days and cost variance.",
+            schema(
+                json!({
+                    "baseline": { "type": "string", "description": "Default: the active one" },
+                    "changed": { "type": "boolean", "description": "Only tasks that moved, changed cost or are new" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "cursor": { "type": "string" },
+                }),
+                &[],
+            ),
+        )),
+        Tool::new(
+            "baseline_save",
+            "Freeze the current schedule (dates, costs, planned value) as a new active baseline. Never overwrites an existing one; a revision should carry a change reference.",
+            schema(
+                json!({
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "change_ref": { "type": "string", "description": "Change request that approved it" },
+                    "reason": { "type": "string" },
+                    "approved_by": { "type": "string" },
+                    "date": { "type": "string", "description": "YYYY-MM-DD (default today)" },
+                    "dry_run": { "type": "boolean" },
+                }),
+                &["id"],
+            ),
+        )
+        .annotate(ToolAnnotations::new().read_only(false).destructive(false).idempotent(false)),
         read_only(Tool::new(
             "diff",
             "What moved compared with another version of the plan: a file or a git revision.",
@@ -563,9 +601,67 @@ impl AlmaServer {
             "scurve" => {
                 let (_, l) = self.scheduled(args)?;
                 let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
-                let r = alma_ops::cost::scurve(plan, s, str_arg(args, "period").unwrap_or("month"))
-                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                let (path, _) = self.load(args)?;
+                let want = str_arg(args, "baseline");
+                let snap = if want.is_none() && !plan.baselines.iter().any(|b| b.active) {
+                    None
+                } else {
+                    let id = alma_ops::baseline::pick(plan, want)
+                        .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                    Some(
+                        alma_ops::baseline::read_snapshot(&path, id)
+                            .map_err(|m| Outcome::error("E-CLI-01", m))?,
+                    )
+                };
+                let r = alma_ops::cost::scurve(
+                    plan,
+                    s,
+                    str_arg(args, "period").unwrap_or("month"),
+                    snap.as_ref(),
+                )
+                .map_err(|m| Outcome::error("E-CLI-01", m))?;
                 Outcome::from(&r, false)
+            }
+            "baseline_list" => {
+                let (path, l) = self.load(args)?;
+                let Some(plan) = l.plan.as_ref() else {
+                    return Err(Outcome::error("E-OPS-04", "the plan file has errors"));
+                };
+                Outcome::ok(json!({
+                    "schema": alma_ops::OUTPUT_SCHEMA,
+                    "baselines": alma_ops::baseline::list(plan, &path),
+                }))
+            }
+            "variance" => {
+                let (path, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let id = alma_ops::baseline::pick(plan, str_arg(args, "baseline"))
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                let snap = alma_ops::baseline::read_snapshot(&path, id)
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                let page = Page::new(usize_arg(args, "limit"), str_arg(args, "cursor"));
+                Outcome::from(
+                    &alma_ops::baseline::variance(plan, s, &snap, bool_arg(args, "changed"), page),
+                    false,
+                )
+            }
+            "baseline_save" => {
+                let path = self.plan_path(args)?;
+                let id = str_arg(args, "id").unwrap_or_default().to_string();
+                let s = |k| str_arg(args, k).map(str::to_string);
+                let meta = alma_ops::mutate::BaselineMeta {
+                    id,
+                    name: s("name"),
+                    date: s("date").unwrap_or_else(|| alma_ops::files::today().to_string()),
+                    change_ref: s("change_ref"),
+                    reason: s("reason"),
+                    approved_by: s("approved_by"),
+                };
+                let _guard = self.write_lock.lock().unwrap_or_else(|p| p.into_inner());
+                match alma_ops::baseline::save(&path, &meta, bool_arg(args, "dry_run")) {
+                    Ok(r) => Outcome::from(&r, !r.report.ok),
+                    Err(e) => Outcome::error("E-CLI-01", format!("cannot save the baseline: {e}")),
+                }
             }
             "diff" => {
                 let path = self.plan_path(args)?;

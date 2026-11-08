@@ -2,8 +2,9 @@
 //! ADR 0012).
 
 use alma_core::model::Plan;
+use alma_core::model::Snapshot;
 use alma_sched::Schedule;
-use alma_sched::cost::{Source, costs, curve};
+use alma_sched::cost::{Source, costs, curve_over};
 use alma_sched::resources::Period;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
@@ -162,6 +163,9 @@ pub struct CurvePoint {
     pub cost: f64,
     /// Cumulative cost at the end of the period.
     pub cumulative: f64,
+    /// Cumulative planned value at the end of the period, from the baseline (F-COST-13).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pv: Option<f64>,
 }
 
 /// Result of `alma scurve`.
@@ -169,9 +173,15 @@ pub struct CurvePoint {
 pub struct CurveReport {
     /// Output schema version.
     pub schema: u32,
-    /// What the curve is: `forecast` (the current schedule). Planned value (PV) needs a
-    /// baseline.
+    /// What `cost` and `cumulative` are: `forecast` (the current schedule). Planned value
+    /// (`pv`) comes from `baseline`.
     pub basis: String,
+    /// Baseline the `pv` column comes from (the active one), when the plan has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<String>,
+    /// Budget at completion of that baseline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bac: Option<f64>,
     /// Currency label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
@@ -183,14 +193,26 @@ pub struct CurveReport {
     pub points: Vec<CurvePoint>,
 }
 
-/// `alma scurve`: cost per period and cumulative (F-COST-08, F-COST-12).
-pub fn scurve(plan: &Plan, schedule: &Schedule, period: &str) -> Result<CurveReport, String> {
+/// `alma scurve`: cost per period and cumulative (F-COST-08, F-COST-12), with planned value
+/// from `baseline` when given.
+pub fn scurve(
+    plan: &Plan,
+    schedule: &Schedule,
+    period: &str,
+    baseline: Option<&Snapshot>,
+) -> Result<CurveReport, String> {
     let p = Period::parse(period)
         .ok_or_else(|| format!("period `{period}` must be day, week or month"))?;
     let c = costs(plan, schedule);
-    let points = curve(plan, schedule, &c, p)
+    let widen = baseline.map(|b| (b.start, b.finish + 1));
+    let pts = curve_over(plan, schedule, &c, p, widen);
+    let buckets: Vec<(jiff::civil::Date, jiff::civil::Date)> =
+        pts.iter().map(|x| (x.start, x.end)).collect();
+    let pv = baseline.map(|b| alma_sched::baseline::pv_curve(b, &buckets));
+    let points = pts
         .into_iter()
-        .map(|pt| CurvePoint {
+        .enumerate()
+        .map(|(i, pt)| CurvePoint {
             start: pt.start.to_string(),
             end: pt
                 .end
@@ -199,11 +221,14 @@ pub fn scurve(plan: &Plan, schedule: &Schedule, period: &str) -> Result<CurveRep
                 .to_string(),
             cost: money(pt.cost),
             cumulative: money(pt.cumulative),
+            pv: pv.as_ref().map(|v| money(v[i])),
         })
         .collect();
     Ok(CurveReport {
         schema: OUTPUT_SCHEMA,
         basis: "forecast".into(),
+        baseline: baseline.map(|b| b.baseline.clone()),
+        bac: baseline.map(|b| money(b.bac)),
         currency: plan.project.currency.clone(),
         period: period.into(),
         total: money(c.total),
@@ -211,14 +236,22 @@ pub fn scurve(plan: &Plan, schedule: &Schedule, period: &str) -> Result<CurveRep
     })
 }
 
-/// The S-curve as CSV: `start,end,cost,cumulative`.
+/// The S-curve as CSV: `start,end,cost,cumulative`, and `pv` when there is a baseline.
 pub fn scurve_csv(r: &CurveReport) -> String {
-    let mut out = String::from("start,end,cost,cumulative\n");
+    let mut out = String::from(if r.baseline.is_some() {
+        "start,end,cost,cumulative,pv\n"
+    } else {
+        "start,end,cost,cumulative\n"
+    });
     for p in &r.points {
         out.push_str(&format!(
-            "{},{},{:.2},{:.2}\n",
+            "{},{},{:.2},{:.2}",
             p.start, p.end, p.cost, p.cumulative
         ));
+        if let Some(pv) = p.pv {
+            out.push_str(&format!(",{pv:.2}"));
+        }
+        out.push('\n');
     }
     out
 }

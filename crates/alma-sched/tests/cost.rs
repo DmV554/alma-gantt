@@ -6,6 +6,7 @@ use std::str::FromStr;
 use alma_core::model::*;
 use alma_core::time::start_of;
 use alma_core::{Duration, WorkUnits, parse_duration};
+use alma_sched::baseline::{snapshot, variance};
 use alma_sched::cost::{Accrual, costs, curve, hourly, share};
 use alma_sched::cpm::Calendars;
 use alma_sched::resources::Period;
@@ -51,6 +52,7 @@ fn plan(tasks: Vec<Task>, resources: Vec<Resource>) -> Plan {
         resources,
         cadences: Vec::new(),
         tasks,
+        baselines: Vec::new(),
     }
 }
 
@@ -210,6 +212,52 @@ fn l_res_05_unpriced_resource_and_l_cost_01_uncategorized_fixed_cost() {
     assert_eq!(codes, vec!["L-RES-05", "L-COST-01"]);
 }
 
+/// A baseline freezes dates, costs and planned value; variance compares the plan with it.
+#[test]
+fn f_cost_13_baseline_planned_value_and_variance() {
+    let p = plan(
+        vec![
+            task("a", 5, &[], &[("dev", "1")]),
+            task("b", 5, &["a"], &[("dev", "1")]),
+        ],
+        vec![resource(
+            "dev",
+            Some(("8", RatePer::Day)),
+            ResourceKind::Work,
+        )],
+    );
+    let s = schedule(&p).unwrap();
+    let snap = snapshot("b1", &p, &s);
+    assert_eq!(snap.bac, dec("80"));
+    // 8 per working day, cumulative, no entries on the weekend.
+    assert_eq!(snap.pv.len(), 10);
+    assert_eq!(snap.pv_through(Date::constant(2027, 1, 8)), dec("40"));
+    assert_eq!(
+        snap.pv_through(Date::constant(2027, 1, 9)),
+        dec("40"),
+        "Saturday"
+    );
+    assert_eq!(snap.pv_through(Date::constant(2027, 1, 3)), Decimal::ZERO);
+    assert_eq!(snap.pv_through(Date::constant(2027, 2, 1)), dec("80"));
+
+    // `a` slips two days and gets more expensive; `c` is new.
+    let mut q = p.clone();
+    q.tasks[0].duration = Some(Duration::working(7 * DAY));
+    q.tasks.push(task("c", 1, &["b"], &[]));
+    let s2 = schedule(&q).unwrap();
+    let (rows, removed) = variance(&q, &s2, &snap);
+    assert!(removed.is_empty());
+    assert_eq!((rows[0].start_var, rows[0].finish_var), (0, 2 * DAY));
+    assert_eq!(rows[0].cost - rows[0].baseline_cost, dec("16"));
+    assert_eq!((rows[1].start_var, rows[1].finish_var), (2 * DAY, 2 * DAY));
+    assert!(rows[2].baseline.is_none());
+    // Removing a task shows up as removed.
+    let mut r = p.clone();
+    r.tasks.pop();
+    let (_, removed) = variance(&r, &schedule(&r).unwrap(), &snap);
+    assert_eq!(removed, vec!["b".to_string()]);
+}
+
 fn arb_plan() -> impl Strategy<Value = Plan> {
     (1usize..12).prop_flat_map(|n| {
         let tasks = proptest::collection::vec((0i64..8, 0u8..4, 0u32..400, 0u8..3), n);
@@ -271,5 +319,16 @@ proptest! {
             prop_assert_eq!(last, c.total, "{:?}", period);
             prop_assert!(pts.iter().all(|x| x.cost >= Decimal::ZERO));
         }
+        // A snapshot's planned value ends at its budget and never goes down.
+        let snap = snapshot("b", &p, &s);
+        prop_assert_eq!(snap.pv.last().map(|x| x.1).unwrap_or_default(), c.total);
+        prop_assert!(snap.pv.windows(2).all(|w| w[0].0 < w[1].0 && w[0].1 <= w[1].1));
+        // Against itself, nothing varies.
+        let (rows, removed) = variance(&p, &s, &snap);
+        prop_assert!(removed.is_empty());
+        prop_assert!(rows.iter().all(|r| r.start_var == 0 && r.finish_var == 0 && r.cost == r.baseline_cost));
+        // The file round-trips exactly.
+        let text = alma_format::snapshot::to_text(&snap);
+        prop_assert_eq!(alma_format::snapshot::from_text(&text).unwrap(), snap);
     }
 }

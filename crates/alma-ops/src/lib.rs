@@ -1,6 +1,7 @@
 //! Command layer shared by the CLI, the MCP server and the GUI: typed commands, validation,
 //! atomic transactions, operation log and JSON schemas (SPEC.md §8a, §9).
 
+pub mod baseline;
 pub mod cost;
 pub mod diff;
 pub mod export;

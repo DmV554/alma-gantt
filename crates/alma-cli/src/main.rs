@@ -154,14 +154,32 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         depth: usize,
     },
-    /// Cost per period and cumulative (the S-curve of the current schedule, a forecast).
+    /// Cost per period and cumulative (the S-curve): the current schedule's forecast, and
+    /// planned value from the active baseline when there is one.
     Scurve {
         /// day, week or month.
         #[arg(long, default_value = "month")]
         period: String,
+        /// Baseline for the planned value column (default: the active one).
+        #[arg(long)]
+        baseline: Option<String>,
         /// Print CSV instead of a table.
         #[arg(long)]
         csv: bool,
+    },
+    /// Baselines: frozen copies of dates and costs to measure the plan against.
+    #[command(subcommand)]
+    Baseline(BaselineCmd),
+    /// How the current schedule differs from a baseline: dates and cost per task.
+    Variance {
+        /// Baseline id (default: the active one).
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Only tasks that moved, changed cost, or are new.
+        #[arg(long)]
+        changed: bool,
+        #[command(flatten)]
+        page: PageArgs,
     },
     /// Rewrite the plan in canonical layout (key order, WBS order, spacing); comments are kept.
     Fmt {
@@ -374,6 +392,34 @@ enum ProjectCmd {
         #[command(flatten)]
         m: MutArgs,
     },
+}
+
+#[derive(Subcommand)]
+enum BaselineCmd {
+    /// Freeze the current schedule as a new active baseline. Never overwrites one.
+    Save {
+        /// Baseline id, e.g. b1 or contract.
+        id: String,
+        /// Name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Change request that approved it (expected when it revises another baseline).
+        #[arg(long = "change")]
+        change_ref: Option<String>,
+        /// Why it is saved or revised.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Who approved it.
+        #[arg(long)]
+        approved_by: Option<String>,
+        /// Day it is saved (default: today).
+        #[arg(long)]
+        date: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// List baselines with the finish and budget each one promised.
+    Ls,
 }
 
 #[derive(Subcommand)]
@@ -985,31 +1031,166 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::Scurve { period, csv } => {
-            let (_, l) = loaded(file)?;
+        Cmd::Scurve {
+            period,
+            baseline,
+            csv,
+        } => {
+            let (path, l) = loaded(file)?;
             if let Some(code) = scheduled(&l) {
                 return Ok(code);
             }
-            let r = alma_ops::cost::scurve(
-                l.plan.as_ref().unwrap(),
-                l.schedule.as_ref().unwrap(),
-                &period,
-            )
-            .map_err(Usage)?;
+            let plan = l.plan.as_ref().unwrap();
+            let snap = match (baseline.as_deref(), plan.baselines.iter().any(|b| b.active)) {
+                (None, false) => None,
+                (b, _) => {
+                    let id = alma_ops::baseline::pick(plan, b).map_err(Usage)?;
+                    Some(alma_ops::baseline::read_snapshot(&path, id).map_err(Usage)?)
+                }
+            };
+            let r =
+                alma_ops::cost::scurve(plan, l.schedule.as_ref().unwrap(), &period, snap.as_ref())
+                    .map_err(Usage)?;
             if json {
                 print_json(&r);
             } else if csv {
                 print!("{}", alma_ops::cost::scurve_csv(&r));
             } else {
                 let cur = r.currency.clone().unwrap_or_default();
-                println!("{} per {} ({cur})", r.basis, r.period);
+                match &r.baseline {
+                    Some(b) => {
+                        println!("{} per {} ({cur}); pv from baseline {b}", r.basis, r.period)
+                    }
+                    None => println!("{} per {} ({cur})", r.basis, r.period),
+                }
                 for p in &r.points {
+                    let pv = p.pv.map(|v| format!("\t{v:>12.2}")).unwrap_or_default();
                     println!(
-                        "{}..{}\t{:>12.2}\t{:>12.2}",
+                        "{}..{}\t{:>12.2}\t{:>12.2}{pv}",
                         p.start, p.end, p.cost, p.cumulative
                     );
                 }
                 println!("total: {:.2} {cur}", r.total);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Baseline(BaselineCmd::Save {
+            id,
+            name,
+            change_ref,
+            reason,
+            approved_by,
+            date,
+            m,
+        }) => {
+            let path = resolve_file(file)?;
+            let meta = mutate::BaselineMeta {
+                id,
+                name,
+                date: date.unwrap_or_else(|| alma_ops::files::today().to_string()),
+                change_ref,
+                reason,
+                approved_by,
+            };
+            let r = alma_ops::baseline::save(&path, &meta, m.dry_run)
+                .map_err(|e| Usage(format!("cannot save the baseline: {e}")))?;
+            if json {
+                print_json(&r);
+            } else if let Some(b) = &r.baseline {
+                let verb = if r.report.dry_run {
+                    "would save"
+                } else {
+                    "saved"
+                };
+                println!(
+                    "{verb} baseline {} (finish {}, budget {:.2}) in {}",
+                    b.id, b.finish, b.bac, b.file
+                );
+                r.report.new_diagnostics.iter().for_each(print_diag);
+            } else {
+                print_mutation(&r.report);
+            }
+            Ok(if r.report.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
+        Cmd::Baseline(BaselineCmd::Ls) => {
+            let (path, l) = loaded(file)?;
+            let Some(plan) = l.plan.as_ref() else {
+                return Ok(scheduled(&l).unwrap_or(ExitCode::from(1)));
+            };
+            let rows = alma_ops::baseline::list(plan, &path);
+            if json {
+                print_json(
+                    &serde_json::json!({ "schema": alma_ops::OUTPUT_SCHEMA, "baselines": rows }),
+                );
+            } else {
+                if rows.is_empty() {
+                    println!("no baselines; save one with `alma baseline save <id>`");
+                }
+                for b in &rows {
+                    let active = if b.active { " (active)" } else { "" };
+                    match &b.error {
+                        Some(e) => println!("{}{active}\t{e}", b.id),
+                        None => println!(
+                            "{}{active}\t{}\tfinish {}\tbudget {:.2}",
+                            b.id,
+                            b.date.clone().unwrap_or_default(),
+                            b.finish.clone().unwrap_or_default(),
+                            b.bac.unwrap_or_default()
+                        ),
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Variance {
+            baseline,
+            changed,
+            page,
+        } => {
+            let (path, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let plan = l.plan.as_ref().unwrap();
+            let id = alma_ops::baseline::pick(plan, baseline.as_deref()).map_err(Usage)?;
+            let snap = alma_ops::baseline::read_snapshot(&path, id).map_err(Usage)?;
+            let r = alma_ops::baseline::variance(
+                plan,
+                l.schedule.as_ref().unwrap(),
+                &snap,
+                changed,
+                Page::new(page.limit, page.cursor.as_deref()),
+            );
+            if json {
+                print_json(&r);
+            } else {
+                println!(
+                    "against {}: finish {} → {} ({:+}d), cost {:.2} → {:.2} ({:+.2})",
+                    r.baseline,
+                    r.baseline_finish,
+                    r.finish,
+                    r.finish_var,
+                    r.bac,
+                    r.cost,
+                    r.cost_var
+                );
+                for t in &r.tasks {
+                    let new = if t.new { "  (new)" } else { "" };
+                    println!(
+                        "  {}\tstart {:+}d\tfinish {:+}d\tcost {:+.2}{new}",
+                        t.id, t.start_var, t.finish_var, t.cost_var
+                    );
+                }
+                if !r.removed.is_empty() {
+                    println!("  removed since the baseline: {}", r.removed.join(", "));
+                }
+                if let Some(n) = &r.next_cursor {
+                    println!("more: --cursor {n}");
+                }
             }
             Ok(ExitCode::SUCCESS)
         }

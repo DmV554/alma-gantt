@@ -41,6 +41,7 @@ use Severity::{Error as E, Info as I, Warn as W};
 
 /// Every rule implemented, in code order.
 pub const RULES: &[Rule] = &[
+    rule("L-BAS-05", Some(I), "Rebaseline without a change reference"),
     rule(
         "L-CAL-01",
         Some(W),
@@ -759,6 +760,22 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                     vec![id.clone()],
                 );
             }
+        }
+    }
+
+    // Baselines (knowledge notes, scheduling §1.13 and §4.14).
+    for b in &plan.baselines {
+        if let (Some(parent), None) = (&b.parent, &b.change_ref) {
+            l.report(
+                usize::MAX,
+                "L-BAS-05",
+                I,
+                format!(
+                    "baseline `{}` revises `{parent}` without a change reference (change_ref)",
+                    b.id
+                ),
+                vec![b.id.clone(), parent.clone()],
+            );
         }
     }
 

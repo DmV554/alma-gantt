@@ -16,7 +16,8 @@ claude mcp add alma -- alma --file /path/plan.alma.toml mcp
 ```
 
 Tools mirror the commands below: `check`, `list_tasks`, `show_task`, `critical_path`,
-`explain`, `list_resources`, `resource_usage`, `cost`, `scurve`, `diff`, `keys`, `render` (returns the chart as
+`explain`, `list_resources`, `resource_usage`, `cost`, `scurve`, `baseline_list`,
+`variance`, `baseline_save`, `diff`, `keys`, `render` (returns the chart as
 an image), `export`, `init`, `apply`, and one tool per operation (`task_add`, `dep_add`,
 `level`, `settings_set`, …, same fields as `alma schema`). Every tool takes an optional `file`; mutations take `dry_run`.
 
@@ -38,6 +39,10 @@ an image), `export`, `init`, `apply`, and one tool per operation (`task_add`, `d
    where it is. Repeat until there are no `error` or `warn` diagnostics.
 6. Look at the result: `alma export gantt.png` and open the image. Critical work is red,
    summaries are black brackets, milestones are diamonds, sprints are shaded bands.
+7. When the plan is agreed, freeze it: `alma baseline save b1 --name "Contract"`. From then on
+   `alma variance --changed` shows what slipped or got more expensive, and `alma scurve`
+   shows planned value next to the forecast. Baselines are never overwritten: a revision is a
+   new id with `--change CR-…`. Commit `.alma/baselines/` with the plan.
 
 For many changes at once, write the operations to a file and run `alma apply ops.json`
 (all or nothing). `alma schema` prints the JSON Schema of operations.
@@ -82,7 +87,10 @@ alma explain <id>                        # names the resource a leveled task wai
 alma res ls                              # resources, booked hours, over-allocations
 alma res usage <id> [--period day|week|month]   # demand vs capacity per period
 alma cost [--by wbs|resource|category] [--depth 2]   # what the plan costs, and where
-alma scurve [--period month] [--csv]     # cost per period and cumulative (a forecast)
+alma scurve [--period month] [--csv] [--baseline b1]   # forecast and planned value per period
+alma baseline save <id> [--name "..."] [--change CR-12] [--reason "..."] [--date 2027-01-04]
+alma baseline ls
+alma variance [--baseline b1] [--changed] [--limit N]   # dates and cost vs the baseline
 alma diff [--rev HEAD | --against old.alma.toml]   # what moved since then
 alma keys [task|project|calendar|resource|cadence|task.deps|task.estimate ...]   # field reference
 alma schema

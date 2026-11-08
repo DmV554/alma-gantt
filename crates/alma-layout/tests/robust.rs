@@ -103,6 +103,7 @@ fn arb_case() -> impl Strategy<Value = Case> {
                 resources: Vec::new(),
                 cadences,
                 tasks,
+                baselines: Vec::new(),
             };
             let day = |d: i64| start.checked_add(jiff::Span::new().days(d)).unwrap();
             let opts = Options {

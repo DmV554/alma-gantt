@@ -104,6 +104,7 @@ fn hybrid_terminal_fixture() {
         loaded.plan.as_ref().unwrap(),
         loaded.schedule.as_ref().unwrap(),
         "month",
+        None,
     )
     .unwrap();
     assert_eq!(curve.points.last().unwrap().cumulative, 4714.5);

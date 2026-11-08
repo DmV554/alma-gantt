@@ -741,3 +741,119 @@ fn costs_and_s_curve() {
         (1, Some("E-FMT-02"))
     );
 }
+
+#[test]
+fn baselines_variance_and_planned_value() {
+    let p = Plan::new("baseline");
+    let snap = p.dir.join(".alma/baselines/plan/b1.toml");
+    // No baseline yet: variance is a usage error that says what to do.
+    let (code, v) = p.json(&["variance"]);
+    assert_eq!(code, 2);
+    assert!(
+        v["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("baseline save")
+    );
+
+    // A dry run writes neither the plan nor the snapshot.
+    let before = p.text();
+    let (code, v) = p.json(&[
+        "baseline",
+        "save",
+        "b1",
+        "--date",
+        "2026-12-15",
+        "--dry-run",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["baseline"]["bac"], 4714.5);
+    assert_eq!(p.text(), before);
+    assert!(!snap.exists());
+
+    let (code, v) = p.json(&[
+        "baseline",
+        "save",
+        "b1",
+        "--name",
+        "Contract",
+        "--date",
+        "2026-12-15",
+        "--approved-by",
+        "Sponsor",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert!(snap.exists());
+    assert_eq!(
+        v["changed"].as_array().unwrap().len(),
+        0,
+        "saving moves no date"
+    );
+    let text = p.text();
+    assert!(text.ends_with(
+        "[[baseline]]\nid = \"b1\"\nname = \"Contract\"\ndate = 2026-12-15\nactive = true\napproved_by = \"Sponsor\"\n"
+    ), "{text}");
+    let (code, _) = p.json(&["fmt", "--check"]);
+    assert_eq!(code, 0, "a saved baseline keeps the canonical layout");
+
+    // Never overwritten.
+    let snap_text = std::fs::read_to_string(&snap).unwrap();
+    let (code, v) = p.json(&["baseline", "save", "b1", "--date", "2026-12-16"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-01"))
+    );
+    assert_eq!(std::fs::read_to_string(&snap).unwrap(), snap_text);
+
+    // Against itself nothing varies; after a change, it does.
+    let (_, v) = p.json(&["variance", "--changed"]);
+    assert_eq!(
+        (v["total"].as_u64(), v["finish_var"].as_f64()),
+        (Some(0), Some(0.0))
+    );
+    p.json(&["task", "set", "yard-sw", "--duration", "55d"]);
+    let (code, v) = p.json(&["variance", "--changed", "--limit", "2"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["finish_var"], 5.0);
+    assert_eq!(v["tasks"].as_array().unwrap().len(), 2);
+    assert!(v["next_cursor"].is_string());
+
+    // The S-curve gains planned value from the active baseline.
+    let (_, v) = p.json(&["scurve"]);
+    assert_eq!(v["baseline"], "b1");
+    let last = v["points"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["pv"], 4714.5);
+    let out = p.alma(&["scurve", "--csv"]);
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .starts_with("start,end,cost,cumulative,pv\n")
+    );
+
+    // A revision without a change reference is noted; the new one becomes active.
+    let (code, v) = p.json(&["baseline", "save", "b2", "--date", "2027-01-10"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["new_diagnostics"][0]["code"], "L-BAS-05");
+    let (_, v) = p.json(&["baseline", "ls"]);
+    let rows = v["baselines"].as_array().unwrap();
+    assert_eq!(
+        (rows[0]["active"].as_bool(), rows[1]["active"].as_bool()),
+        (Some(false), Some(true))
+    );
+    assert_eq!(rows[1]["parent"], "b1");
+    let (_, v) = p.json(&["variance", "--baseline", "b1", "--limit", "1"]);
+    assert_eq!(v["baseline"], "b1");
+
+    // A missing snapshot is reported, not ignored.
+    std::fs::remove_file(&snap).unwrap();
+    let (code, v) = p.json(&["variance", "--baseline", "b1"]);
+    assert_eq!(code, 2);
+    assert!(
+        v["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no snapshot")
+    );
+    let (_, v) = p.json(&["baseline", "ls"]);
+    assert!(v["baselines"][0]["error"].is_string());
+}
