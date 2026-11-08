@@ -857,3 +857,99 @@ fn baselines_variance_and_planned_value() {
     let (_, v) = p.json(&["baseline", "ls"]);
     assert!(v["baselines"][0]["error"].is_string());
 }
+
+#[test]
+fn reserves_and_the_cost_stack() {
+    let p = Plan::new("reserve");
+    let (code, v) = p.json(&[
+        "reserve",
+        "add",
+        "c-ocr",
+        "--amount",
+        "120",
+        "--scope",
+        "gate-ocr",
+        "--basis",
+        "EMV of OCR risks",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["cost_delta"], "+120.00");
+    let (code, v) = p.json(&[
+        "reserve",
+        "add",
+        "mr",
+        "--amount",
+        "300",
+        "--kind",
+        "management",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert!(
+        v.get("cost_delta").is_none(),
+        "management reserve is outside the baseline"
+    );
+    let (_, v) = p.json(&["cost"]);
+    let st = &v["stack"];
+    assert_eq!(
+        (
+            st["work"].as_f64(),
+            st["contingency"].as_f64(),
+            st["cost_baseline"].as_f64()
+        ),
+        (Some(4714.5), Some(120.0), Some(4834.5))
+    );
+    assert_eq!(
+        (
+            st["management_reserve"].as_f64(),
+            st["project_budget"].as_f64()
+        ),
+        (Some(300.0), Some(5134.5))
+    );
+    let (_, v) = p.json(&["scurve"]);
+    assert_eq!(
+        (v["total"].as_f64(), v["budget"].as_f64()),
+        (Some(4834.5), Some(5134.5))
+    );
+    // Same reserve again: no-op; different: refused. Unknown scope: refused.
+    let (code, v) = p.json(&[
+        "reserve",
+        "add",
+        "mr",
+        "--amount",
+        "300",
+        "--kind",
+        "management",
+    ]);
+    assert_eq!((code, v["noop"].as_bool()), (0, Some(true)));
+    let (code, v) = p.json(&[
+        "reserve",
+        "add",
+        "mr",
+        "--amount",
+        "400",
+        "--kind",
+        "management",
+    ]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-01"))
+    );
+    let (code, v) = p.json(&["reserve", "add", "c2", "--amount", "5", "--scope", "nope"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-REF-03"))
+    );
+    let (code, v) = p.json(&["reserve", "add", "c3", "--amount", "5"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["new_diagnostics"][0]["code"], "L-RISK-01");
+    for id in ["c-ocr", "mr", "c3"] {
+        let (code, _) = p.json(&["reserve", "rm", id]);
+        assert_eq!(code, 0);
+    }
+    assert!(!p.text().contains("[[reserve]]"));
+    let (code, v) = p.json(&["reserve", "rm", "mr"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-02"))
+    );
+}

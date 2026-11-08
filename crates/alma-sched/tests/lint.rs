@@ -25,6 +25,7 @@ fn plan(tasks: Vec<Task>) -> Plan {
         cadences: Vec::new(),
         tasks,
         baselines: Vec::new(),
+        reserves: Vec::new(),
     }
 }
 

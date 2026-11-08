@@ -13,7 +13,8 @@ use crate::keys;
 
 /// Top-level order.
 const TOP: &[&str] = &[
-    "project", "settings", "rules", "calendar", "resource", "cadence", "task", "baseline",
+    "project", "settings", "rules", "calendar", "resource", "cadence", "task", "reserve",
+    "baseline",
 ];
 
 /// Inline or sub-table key → registry table name.

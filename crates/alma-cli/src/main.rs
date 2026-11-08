@@ -167,6 +167,9 @@ enum Cmd {
         #[arg(long)]
         csv: bool,
     },
+    /// Cost reserves: contingency (inside the cost baseline) and management reserve.
+    #[command(subcommand)]
+    Reserve(ReserveCmd),
     /// Baselines: frozen copies of dates and costs to measure the plan against.
     #[command(subcommand)]
     Baseline(BaselineCmd),
@@ -389,6 +392,36 @@ enum ProjectCmd {
         /// Currency label.
         #[arg(long)]
         currency: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReserveCmd {
+    /// Add a reserve.
+    Add {
+        /// Reserve id.
+        id: String,
+        /// Amount, e.g. 300.
+        #[arg(long)]
+        amount: String,
+        /// contingency (default) or management.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Task it covers (default: the whole project).
+        #[arg(long)]
+        scope: Option<String>,
+        /// How the amount was sized.
+        #[arg(long)]
+        basis: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Remove a reserve.
+    Rm {
+        /// Reserve id.
+        id: String,
         #[command(flatten)]
         m: MutArgs,
     },
@@ -1024,7 +1057,19 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                         row.id, row.cost, row.pct
                     );
                 }
-                println!("total: {:.2} {cur}", r.total);
+                let st = &r.stack;
+                if st.contingency != 0.0 || st.management_reserve != 0.0 {
+                    println!(
+                        "work {:.2} + contingency {:.2} = cost baseline {:.2}; + management reserve {:.2} = budget {:.2} {cur}",
+                        st.work,
+                        st.contingency,
+                        st.cost_baseline,
+                        st.management_reserve,
+                        st.project_budget
+                    );
+                } else {
+                    println!("total: {:.2} {cur}", r.total);
+                }
                 if !r.unpriced.is_empty() {
                     println!("no rate (cost 0): {}", r.unpriced.join(", "));
                 }
@@ -1073,6 +1118,29 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 println!("total: {:.2} {cur}", r.total);
             }
             Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Reserve(c) => {
+            let (op, m) = match c {
+                ReserveCmd::Add {
+                    id,
+                    amount,
+                    kind,
+                    scope,
+                    basis,
+                    m,
+                } => (
+                    Op::ReserveAdd {
+                        id,
+                        amount,
+                        kind,
+                        scope,
+                        basis,
+                    },
+                    m,
+                ),
+                ReserveCmd::Rm { id, m } => (Op::ReserveRm { id }, m),
+            };
+            mutation(file, &[op], m.dry_run, json)
         }
         Cmd::Baseline(BaselineCmd::Save {
             id,

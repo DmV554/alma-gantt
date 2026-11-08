@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use alma_core::diag::{Diagnostic, Severity};
 use alma_core::model::{
     Approach, ConstraintKind, DepNature, DepScope, DepType, Leveling, MilestoneClass, ParamValue,
-    Phase, Plan, ReportingPeriod, SchedType, TaskKind, WbsRole,
+    Phase, Plan, ReportingPeriod, ReserveKind, SchedType, TaskKind, WbsRole,
 };
 use alma_core::time::{finish_date, format_instant, start_date};
 use rust_decimal::Decimal;
@@ -118,6 +118,7 @@ pub const RULES: &[Rule] = &[
         Some(W),
         "Resource with assignments but no rate (its cost counts as zero)",
     ),
+    rule("L-RISK-01", Some(W), "Contingency reserve without a basis"),
     rule(
         "L-SCH-01",
         Some(E),
@@ -776,6 +777,30 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                 ),
                 vec![b.id.clone(), parent.clone()],
             );
+        }
+    }
+
+    // Reserves (knowledge notes, resources §4.1).
+    for r in &plan.reserves {
+        if r.kind == ReserveKind::Contingency && r.basis.is_none() {
+            let before = l.out.len();
+            l.report(
+                usize::MAX,
+                "L-RISK-01",
+                W,
+                format!(
+                    "contingency `{}` has no basis: a reserve nobody can justify reads as padding",
+                    r.id
+                ),
+                vec![r.id.clone()],
+            );
+            if l.out.len() > before
+                && let Some((_, d)) = l.out.last_mut()
+            {
+                *d = d.clone().with_hint(
+                    "say how it was sized: `--basis \"EMV of risks R-03, R-07\"` or a percentage and why",
+                );
+            }
         }
     }
 

@@ -258,6 +258,30 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
     },
+    /// Add a cost reserve: `contingency` (inside the cost baseline, for identified risks) or
+    /// `management` (outside it, for the unforeseen).
+    #[serde(rename = "reserve.add")]
+    ReserveAdd {
+        /// Id.
+        id: String,
+        /// Amount, e.g. `300`.
+        amount: String,
+        /// `contingency` (default) or `management`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        /// Task it covers (default: the whole project).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        /// How the amount was sized.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        basis: Option<String>,
+    },
+    /// Remove a cost reserve.
+    #[serde(rename = "reserve.rm")]
+    ReserveRm {
+        /// Id.
+        id: String,
+    },
     /// Set or unset scheduling settings (`[settings.schedule]`).
     #[serde(rename = "settings.set")]
     SettingsSet {
@@ -1569,6 +1593,54 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
             sev.insert(code, value(severity.as_str()));
             if created {
                 alma_format::place_tables(doc);
+            }
+            Ok(())
+        }
+        Op::ReserveAdd {
+            id,
+            amount,
+            kind,
+            scope,
+            basis,
+        } => {
+            let mut t = new_table();
+            t.insert("id", value(id.as_str()));
+            if let Some(k) = kind {
+                t.insert("kind", value(k.as_str()));
+            }
+            t.insert("amount", value(amount.as_str()));
+            if let Some(s) = scope {
+                t.insert("scope", value(s.as_str()));
+            }
+            if let Some(b) = basis {
+                t.insert("basis", value(b.as_str()));
+            }
+            push_top_table(doc, "reserve", id, t)
+        }
+        Op::ReserveRm { id } => {
+            let Some(aot) = doc
+                .get_mut("reserve")
+                .and_then(Item::as_array_of_tables_mut)
+            else {
+                return Err(op_err(
+                    "E-OPS-02",
+                    format!("no reserve with id `{id}`"),
+                    &[id],
+                ));
+            };
+            let Some(i) = aot
+                .iter()
+                .position(|r| r.get("id").and_then(Item::as_str) == Some(id.as_str()))
+            else {
+                return Err(op_err(
+                    "E-OPS-02",
+                    format!("no reserve with id `{id}`"),
+                    &[id],
+                ));
+            };
+            aot.remove(i);
+            if aot.is_empty() {
+                doc.remove("reserve");
             }
             Ok(())
         }

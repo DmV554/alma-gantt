@@ -430,6 +430,7 @@ fn read_plan(cx: &mut Cx, root: &toml_edit::Table) -> Option<Plan> {
     let resources = read_list(cx, root, "resource", units, read_resource);
     let cadences = read_list(cx, root, "cadence", units, read_cadence);
     let tasks = read_list(cx, root, "task", units, read_task);
+    let reserves = read_list(cx, root, "reserve", units, read_reserve);
     let baselines = read_list(cx, root, "baseline", units, read_baseline);
 
     let plan = Plan {
@@ -441,6 +442,7 @@ fn read_plan(cx: &mut Cx, root: &toml_edit::Table) -> Option<Plan> {
         cadences,
         tasks,
         baselines,
+        reserves,
     };
     validate(cx, &plan, root);
     Some(plan)
@@ -822,6 +824,29 @@ fn read_cadence(cx: &mut Cx, f: &Fields<'_>) -> Option<Cadence> {
     })
 }
 
+fn read_reserve(cx: &mut Cx, f: &Fields<'_>) -> Option<CostReserve> {
+    let id = f.required_str(cx, "id")?;
+    if f.get("amount").is_none() {
+        let at = cx.at(f.at.clone());
+        cx.err(
+            "E-FMT-03",
+            format!("{} needs an `amount` like \"300\"", f.owner),
+            at,
+        );
+        return None;
+    }
+    let amount = f.money(cx, "amount")?;
+    Some(CostReserve {
+        kind: f
+            .enumerated(cx, "kind", ReserveKind::parse, ReserveKind::VALUES)
+            .unwrap_or(ReserveKind::Contingency),
+        amount,
+        scope: f.str(cx, "scope"),
+        basis: f.str(cx, "basis"),
+        id,
+    })
+}
+
 fn read_baseline(cx: &mut Cx, f: &Fields<'_>) -> Option<Baseline> {
     let id = f.required_str(cx, "id")?;
     Some(Baseline {
@@ -1053,6 +1078,9 @@ fn validate(cx: &mut Cx, plan: &Plan, root: &toml_edit::Table) {
     for b in &plan.baselines {
         ids.push((b.id.clone(), "baseline", None));
     }
+    for r in &plan.reserves {
+        ids.push((r.id.clone(), "reserve", None));
+    }
     for (id, kind, span) in ids {
         if !is_valid_id(&id) {
             cx.err(
@@ -1115,6 +1143,13 @@ fn validate(cx: &mut Cx, plan: &Plan, root: &toml_edit::Table) {
             && !calendars.contains(cal.as_str())
         {
             missing(cx, "calendar", cal, &c.id, None);
+        }
+    }
+    for r in &plan.reserves {
+        if let Some(scope) = &r.scope
+            && !tasks.contains_key(scope.as_str())
+        {
+            missing(cx, "task", scope, &r.id, None);
         }
     }
     let baselines: HashSet<&str> = plan.baselines.iter().map(|b| b.id.as_str()).collect();

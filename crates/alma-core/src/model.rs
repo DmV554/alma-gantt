@@ -307,6 +307,24 @@ pub struct Plan {
     pub tasks: Vec<Task>,
     /// `[[baseline]]`, source order (ADR 0013).
     pub baselines: Vec<Baseline>,
+    /// `[[reserve]]`, source order (ADR 0014).
+    pub reserves: Vec<CostReserve>,
+}
+
+/// `[[reserve]]`: a cost reserve. Contingency is part of the cost baseline; management reserve
+/// is outside it but inside the project budget (knowledge notes, resources §4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CostReserve {
+    /// Id.
+    pub id: String,
+    /// Contingency or management.
+    pub kind: ReserveKind,
+    /// Amount in project currency.
+    pub amount: Decimal,
+    /// Task it covers (its finish is when contingency accrues); `None` = the whole project.
+    pub scope: Option<String>,
+    /// Basis: how the amount was sized.
+    pub basis: Option<String>,
 }
 
 /// One task in a snapshot.

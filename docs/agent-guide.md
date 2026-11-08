@@ -87,6 +87,8 @@ alma explain <id>                        # names the resource a leveled task wai
 alma res ls                              # resources, booked hours, over-allocations
 alma res usage <id> [--period day|week|month]   # demand vs capacity per period
 alma cost [--by wbs|resource|category] [--depth 2]   # what the plan costs, and where
+alma reserve add <id> --amount 300 [--kind contingency|management] [--scope task] [--basis "..."]
+alma reserve rm <id>
 alma scurve [--period month] [--csv] [--baseline b1]   # forecast and planned value per period
 alma baseline save <id> [--name "..."] [--change CR-12] [--reason "..."] [--date 2027-01-04]
 alma baseline ls
@@ -106,6 +108,10 @@ alma guide
   weeks) or `use`. A time rate costs units × working hours; a `use` rate costs units × amount
   once (a fee, or a quantity × unit price for materials). Fixed costs: `--field
   fixed_cost.amount=180 --field fixed_cost.accrue=start --field fixed_cost.category=investment`.
+- Reserves: contingency (identified risks) is part of the cost baseline and accrues at the
+  finish of its scope; management reserve (the unforeseen) is outside it, in the budget only.
+  `alma cost` shows the stack: work + contingency = cost baseline; + management = budget.
+  Give every contingency a `--basis`. Time reserves are buffer tasks (`--kind buffer`).
 - Ids: lowercase letters, digits and hyphens, unique across the whole plan.
 - `kind`: `task` (default), `milestone`, `loe` (level of effort), `buffer` (time reserve).
   A task with children is a summary; do not give it a `kind`.

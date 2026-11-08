@@ -46,9 +46,11 @@ pub struct CostReport {
     /// Currency label from `[project]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
-    /// Total cost of the current schedule. It becomes the budget at completion (BAC) only once
-    /// a baseline is saved.
+    /// Total cost of the current schedule, contingency included: the cost baseline. It becomes
+    /// the budget at completion (BAC) once a baseline is saved.
     pub total: f64,
+    /// How the total and the budget are built (F-COST-09, F-COST-10).
+    pub stack: CostStack,
     /// `wbs`, `resource` or `category`.
     pub by: String,
     /// Rows, in plan order (`wbs`, `resource`) or by category name.
@@ -56,6 +58,32 @@ pub struct CostReport {
     /// Resources assigned but without a rate: their cost counts as zero (`L-RES-05`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unpriced: Vec<String>,
+}
+
+/// The cost stack: work and fixed costs, plus contingency, is the cost baseline; plus
+/// management reserve, the project budget.
+#[derive(Debug, Clone, Serialize)]
+pub struct CostStack {
+    /// Work (resources) and fixed costs.
+    pub work: f64,
+    /// Contingency reserves (inside the baseline).
+    pub contingency: f64,
+    /// Cost baseline: work + contingency.
+    pub cost_baseline: f64,
+    /// Management reserve (outside the baseline).
+    pub management_reserve: f64,
+    /// Project budget: cost baseline + management reserve.
+    pub project_budget: f64,
+}
+
+fn stack(c: &alma_sched::cost::Costs) -> CostStack {
+    CostStack {
+        work: money(c.total - c.contingency),
+        contingency: money(c.contingency),
+        cost_baseline: money(c.total),
+        management_reserve: money(c.management),
+        project_budget: money(c.total + c.management),
+    }
 }
 
 /// `alma cost`: the cost of the current schedule, grouped by WBS (down to `depth`), resource or
@@ -121,6 +149,7 @@ pub fn report(
                     (Source::Resource(r), _) => plan.resources[r].kind.as_str().to_string(),
                     (Source::Fixed, Some(cat)) => cat.clone(),
                     (Source::Fixed, None) => "uncategorized".to_string(),
+                    (Source::Contingency(_), _) => "contingency".to_string(),
                 };
                 *groups.entry(key).or_default() += l.amount;
             }
@@ -142,6 +171,7 @@ pub fn report(
         schema: OUTPUT_SCHEMA,
         currency: plan.project.currency.clone(),
         total: money(c.total),
+        stack: stack(&c),
         by: by.into(),
         rows,
         unpriced: c
@@ -187,8 +217,10 @@ pub struct CurveReport {
     pub currency: Option<String>,
     /// `day`, `week` or `month`.
     pub period: String,
-    /// Total.
+    /// Total (the cost baseline of the current schedule).
     pub total: f64,
+    /// Project budget (total + management reserve): a ceiling to draw over the curve.
+    pub budget: f64,
     /// Periods from the first cost to the finish.
     pub points: Vec<CurvePoint>,
 }
@@ -232,6 +264,7 @@ pub fn scurve(
         currency: plan.project.currency.clone(),
         period: period.into(),
         total: money(c.total),
+        budget: money(c.total + c.management),
         points,
     })
 }

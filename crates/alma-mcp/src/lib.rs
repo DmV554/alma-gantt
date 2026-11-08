@@ -185,6 +185,10 @@ fn op_description(op: &str) -> &'static str {
         "cal.add" => "Add a working calendar (workdays, hours like 09:00-13:00).",
         "cal.except" => "Add a holiday or blackout period to a calendar (dates inclusive).",
         "rule.set" => "Set a lint rule's severity for this plan (off, info, warn, error).",
+        "reserve.add" => {
+            "Add a cost reserve: kind `contingency` (identified risks; inside the cost baseline, accrues at the finish of its scope) or `management` (the unforeseen; outside the baseline, inside the budget). Give a `basis`."
+        }
+        "reserve.rm" => "Remove a cost reserve.",
         "level" => {
             "Resolve resource over-allocation: mode `leveling` delays tasks until their resources fit (the finish may move), `smoothing` only within free float, `off` turns it off. Saved in the plan; the result lists delayed tasks and what each waits for."
         }

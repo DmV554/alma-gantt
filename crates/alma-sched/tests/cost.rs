@@ -53,6 +53,7 @@ fn plan(tasks: Vec<Task>, resources: Vec<Resource>) -> Plan {
         cadences: Vec::new(),
         tasks,
         baselines: Vec::new(),
+        reserves: Vec::new(),
     }
 }
 
@@ -256,6 +257,60 @@ fn f_cost_13_baseline_planned_value_and_variance() {
     r.tasks.pop();
     let (_, removed) = variance(&r, &schedule(&r).unwrap(), &snap);
     assert_eq!(removed, vec!["b".to_string()]);
+}
+
+/// F-COST-09/F-COST-10: contingency is inside the cost baseline and accrues at the finish of
+/// its scope; management reserve is outside it, in the budget only.
+#[test]
+fn f_cost_09_10_reserves_and_the_cost_stack() {
+    let mut p = plan(
+        vec![
+            task("a", 5, &[], &[("dev", "1")]),
+            task("b", 5, &["a"], &[("dev", "1")]),
+        ],
+        vec![resource(
+            "dev",
+            Some(("8", RatePer::Day)),
+            ResourceKind::Work,
+        )],
+    );
+    let reserve = |id: &str, kind, amount: &str, scope: Option<&str>| CostReserve {
+        id: id.into(),
+        kind,
+        amount: dec(amount),
+        scope: scope.map(str::to_string),
+        basis: Some("EMV".into()),
+    };
+    p.reserves = vec![
+        reserve("c-a", ReserveKind::Contingency, "10", Some("a")),
+        reserve("c-p", ReserveKind::Contingency, "5", None),
+        reserve("mr", ReserveKind::Management, "30", None),
+    ];
+    let s = schedule(&p).unwrap();
+    let c = costs(&p, &s);
+    assert_eq!(c.total, dec("95"), "80 of work + 15 of contingency");
+    assert_eq!((c.contingency, c.management), (dec("15"), dec("30")));
+    assert_eq!(c.task_total[0], dec("50"), "a's contingency rolls into a");
+    // Contingency accrues at the finish of its scope: a's on Friday of week 1, the project's
+    // at the finish (Friday of week 2).
+    let pts = curve(&p, &s, &c, Period::Week);
+    assert_eq!((pts[0].cost, pts[1].cost), (dec("50"), dec("45")));
+    let snap = snapshot("b", &p, &s);
+    assert_eq!(
+        snap.bac,
+        dec("95"),
+        "BAC includes contingency, not management reserve"
+    );
+    let lint_codes: Vec<&str> = lint(&p, Some(&s)).iter().map(|d| d.code).collect();
+    assert!(!lint_codes.contains(&"L-RISK-01"));
+    p.reserves[0].basis = None;
+    p.reserves[2].basis = None;
+    let flagged: Vec<String> = lint(&p, Some(&s))
+        .iter()
+        .filter(|d| d.code == "L-RISK-01")
+        .map(|d| d.ids[0].clone())
+        .collect();
+    assert_eq!(flagged, vec!["c-a"], "only contingency needs a basis");
 }
 
 fn arb_plan() -> impl Strategy<Value = Plan> {

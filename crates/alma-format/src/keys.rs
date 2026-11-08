@@ -36,7 +36,7 @@ macro_rules! keys {
 pub const KEYS: &[KeyDef] = keys! {
     "top" => [
         "project": A, "settings": A, "rules": A, "calendar": A, "resource": A, "cadence": B,
-        "task": A, "release": R("M4"), "reserve": R("M2"), "risk": R("M2"), "funding": R("M2"),
+        "task": A, "release": R("M4"), "reserve": A, "risk": R("M2"), "funding": R("M2"),
         "contract": R("M3"), "scenario": R("M2"), "cashflow_item": R("M2"),
         "baseline": A, "ucp": R("a later milestone"),
     ],
@@ -53,6 +53,9 @@ pub const KEYS: &[KeyDef] = keys! {
         "progress_logic": R("M4"), "agile_drives": R("M4"), "control_threshold": R("M4"),
     ],
     "rules" => ["severity": A, "params": A],
+    "reserve" => [
+        "id": A, "kind": A, "amount": A, "scope": A, "basis": A, "risks": R("M2"),
+    ],
     "baseline" => [
         "id": A, "name": A, "date": A, "active": A, "parent": A, "change_ref": A, "reason": A,
         "approved_by": A,

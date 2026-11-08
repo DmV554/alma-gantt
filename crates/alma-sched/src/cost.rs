@@ -6,6 +6,9 @@
 //! - An assignment to a resource with `per = "use"` costs `units × amount` (a per-use fee, or a
 //!   quantity × unit price for materials) and accrues at the task start.
 //! - A fixed cost accrues at the start, at the end, or evenly (`accrue`).
+//! - A contingency reserve (`[[reserve]] kind = "contingency"`) is part of the cost baseline
+//!   and accrues at the finish of its scope (the project finish when it has none). Management
+//!   reserve is outside the baseline: it is counted apart and never accrues (ADR 0014).
 //!
 //! Lags cost nothing: costs only accrue inside tasks. Money is `Decimal`. Every amount is kept
 //! to 12 decimal places (a rate per month divided into hours does not terminate), so sums and
@@ -14,7 +17,7 @@
 use std::collections::HashMap;
 
 use alma_core::duration::WorkUnits;
-use alma_core::model::{Accrue, Plan, Rate, RatePer};
+use alma_core::model::{Accrue, Plan, Rate, RatePer, ReserveKind};
 use alma_core::time::{Instant, start_of};
 use jiff::civil::Date;
 use rust_decimal::Decimal;
@@ -48,12 +51,14 @@ pub enum Source {
     Resource(usize),
     /// The task's fixed cost.
     Fixed,
+    /// A contingency reserve: index in `plan.reserves`.
+    Contingency(usize),
 }
 
 /// One cost element (F-COST-07).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CostLine {
-    /// Task index.
+    /// Task index; `usize::MAX` for a project-level contingency reserve.
     pub task: usize,
     /// What it pays for.
     pub source: Source,
@@ -72,12 +77,17 @@ pub struct CostLine {
 pub struct Costs {
     /// Every cost element, task source order, then assignments in order, then the fixed cost.
     pub lines: Vec<CostLine>,
-    /// Cost per task including its descendants, parallel to `plan.tasks`.
+    /// Cost per task including its descendants and the contingency scoped to them, parallel to
+    /// `plan.tasks`.
     pub task_total: Vec<Decimal>,
     /// Cost per resource, parallel to `plan.resources`.
     pub by_resource: Vec<Decimal>,
-    /// Total.
+    /// The cost baseline (BAC when frozen): work, fixed costs and contingency (F-COST-09).
     pub total: Decimal,
+    /// Contingency included in `total`.
+    pub contingency: Decimal,
+    /// Management reserve, outside `total` (F-COST-10: budget = total + management).
+    pub management: Decimal,
     /// Resources assigned somewhere but with no rate (their cost is zero), source order.
     pub unpriced: Vec<usize>,
 }
@@ -179,24 +189,56 @@ pub fn costs(plan: &Plan, schedule: &Schedule) -> Costs {
     }
     unpriced.sort_unstable();
 
+    let by_id: HashMap<&str, usize> = plan
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id.as_str(), i))
+        .collect();
+    let mut management = Decimal::ZERO;
+    for (k, r) in plan.reserves.iter().enumerate() {
+        match r.kind {
+            ReserveKind::Management => management += r.amount.round_dp(PRECISION),
+            ReserveKind::Contingency => {
+                let task = r.scope.as_deref().and_then(|s| by_id.get(s).copied());
+                let at = task.map_or(schedule.finish, |i| schedule.tasks[i].ef);
+                lines.push(CostLine {
+                    task: task.unwrap_or(usize::MAX),
+                    source: Source::Contingency(k),
+                    category: Some("contingency".into()),
+                    amount: r.amount.round_dp(PRECISION),
+                    work_h: Decimal::ZERO,
+                    accrual: Accrual::At(at),
+                });
+            }
+        }
+    }
+
     let index = PlanIndex::new(plan);
     let mut own = vec![Decimal::ZERO; plan.tasks.len()];
     let mut by_resource = vec![Decimal::ZERO; plan.resources.len()];
+    let mut contingency = Decimal::ZERO;
     for l in &lines {
-        own[l.task] += l.amount;
-        if let Source::Resource(r) = l.source {
-            by_resource[r] += l.amount;
+        if let Some(o) = own.get_mut(l.task) {
+            *o += l.amount;
+        }
+        match l.source {
+            Source::Resource(r) => by_resource[r] += l.amount,
+            Source::Contingency(_) => contingency += l.amount,
+            Source::Fixed => {}
         }
     }
     let task_total = (0..plan.tasks.len())
         .map(|i| subtree(&index, i).map(|j| own[j]).sum())
         .collect();
-    let total = own.iter().copied().sum();
+    let total = lines.iter().map(|l| l.amount).sum();
     Costs {
         lines,
         task_total,
         by_resource,
         total,
+        contingency,
+        management,
         unpriced,
     }
 }

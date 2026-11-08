@@ -41,6 +41,7 @@ fn plan(tasks: Vec<Task>, resources: &[(&str, i64)]) -> Plan {
         cadences: Vec::new(),
         tasks,
         baselines: Vec::new(),
+        reserves: Vec::new(),
     }
 }
 

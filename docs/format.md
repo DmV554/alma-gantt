@@ -26,7 +26,7 @@ listed in §12.
 | D4 | WBS role vs scheduling shape | Two orthogonal fields. `kind` (scheduling shape) = `task \| milestone \| loe \| buffer`. `wbs_role` = `deliverable \| control_account \| work_package \| planning_package`. A summary is any node with children (it is never stored). §6.2 |
 | D5 | Milestone fields | Keep SPEC §7.6.3: `class = contractual \| internal \| external`, `owner`, `acceptance`. Drop the notes' `mandatory`, `visibility` and `criterion` (they carry the same information) |
 | D6 | Iterations | `[[cadence]]` (start, length, count) generates the iterations. A flat list of iterations is not stored. Releases are reserved for M4. §6.6 |
-| D7 | Time reserve | `kind = "buffer"` with `reserve = "contingency" \| "management"`. Cost reserves (`[[reserve]]`) are reserved for M2 |
+| D7 | Time reserve | `kind = "buffer"` with `reserve = "contingency" \| "management"`. Cost reserves are `[[reserve]]` (§6.10, ADR 0014) |
 | D8 | Duration vs three-point estimate | Both can be stored. `duration` is the committed value; `estimate` supports it. With no `duration`, the engine uses tE. §6.3 |
 | D9 | Effort | Field `effort`, scheduling type `sched_type = fixed_duration \| fixed_effort \| fixed_units` (SPEC's wording) |
 | D10 | Assignment key | `assign` (as in SPEC §8 and the fixture), not `assignments` |
@@ -262,7 +262,7 @@ Generated iteration ids join the global id namespace. Per-iteration overrides, `
 capacity and velocity are reserved (R, M4).
 
 ### 6.8 Other reserved top-level items (R)
-`[[release]]` (M4), `[[reserve]]` (M2), `[[risk]]` (M2), `[[funding]]` (M2), `[[contract]]` (M3),
+`[[release]]` (M4), `[[risk]]` (M2), `[[funding]]` (M2), `[[contract]]` (M3),
 `[[scenario]]` (M2), `[[cashflow_item]]` (M2), `[ucp]` (later).
 
 ### 6.9 `[[baseline]]` (tier A)
@@ -280,6 +280,22 @@ Commit that directory with the plan.
 | `change_ref` | string | none | Change request that approved it; a revision without one is `L-BAS-05` |
 | `reason` | string | none | |
 | `approved_by` | string | none | |
+
+### 6.10 `[[reserve]]` (tier A)
+A cost reserve (ADR 0014). Contingency covers identified risks: it is part of the cost baseline
+(BAC) and of planned value, and accrues at the finish of its scope. Management reserve covers the
+unforeseen: it is outside the baseline and counts only in the project budget. Time reserves are
+buffer tasks (D7).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `id` | id | required | Joins the global id namespace |
+| `kind` | `contingency \| management` | `contingency` | |
+| `amount` | money string | required | |
+| `scope` | task id | the project | What it covers; contingency accrues at its finish |
+| `basis` | string | none | How the amount was sized. Contingency without one is `L-RISK-01` |
+
+Reserved (R, M2): `risks` (links to `[[risk]]`).
 
 ---
 
