@@ -41,6 +41,9 @@ pub enum Accrual {
         to: Instant,
         /// Task whose calendar measures working time.
         task: usize,
+        /// A stretch inside `[from, to)` with no work: a task in progress waiting for its
+        /// remaining work to resume (ADR 0018).
+        pause: Option<(Instant, Instant)>,
     },
 }
 
@@ -127,17 +130,25 @@ pub fn costs(plan: &Plan, schedule: &Schedule) -> Costs {
     let mut unpriced = Vec::new();
     for (i, t) in plan.tasks.iter().enumerate() {
         let d = &schedule.tasks[i];
-        let minutes = if d.ef > d.es {
-            cals.of_task(plan, i).between(d.es, d.ef)
-        } else {
-            0
-        };
+        let spans = d.work_spans();
+        let cal = cals.of_task(plan, i);
+        let minutes: i64 = spans
+            .iter()
+            .filter(|(a, b)| b > a)
+            .map(|&(a, b)| cal.between(a, b))
+            .sum();
         let hours = Decimal::from(minutes) / Decimal::from(60);
+        let pause = match spans.as_slice() {
+            [(_, p), (q, _)] => Some((*p, *q)),
+            [(a, _)] if *a > d.es => Some((d.es, *a)),
+            _ => None,
+        };
         let spread = if minutes > 0 {
             Accrual::Spread {
                 from: d.es,
                 to: d.ef,
                 task: i,
+                pause,
             }
         } else {
             Accrual::At(d.es)
@@ -268,9 +279,23 @@ pub fn share(plan: &Plan, cals: &Calendars, line: &CostLine, a: Instant, b: Inst
                 Decimal::ZERO
             }
         }
-        Accrual::Spread { from, to, task } => {
+        Accrual::Spread {
+            from,
+            to,
+            task,
+            pause,
+        } => {
             let cal = cals.of_task(plan, task);
-            let total = cal.between(from, to);
+            // Working time in `[from, t)`, less any pause.
+            let worked = |t: Instant| -> i64 {
+                let t = t.clamp(from, to);
+                let idle = pause.map_or(0, |(p, q)| {
+                    let (p, q) = (p.clamp(from, t), q.clamp(from, t));
+                    if q > p { cal.between(p, q) } else { 0 }
+                });
+                cal.between(from, t) - idle
+            };
+            let total = worked(to);
             if total <= 0 {
                 return if a <= from && from < b {
                     line.amount
@@ -281,7 +306,7 @@ pub fn share(plan: &Plan, cals: &Calendars, line: &CostLine, a: Instant, b: Inst
             // Partial amounts are rounded to 12 decimal places, so differences and sums of
             // them stay exact and the shares of all periods add up to the amount.
             let upto = |t: Instant| -> Decimal {
-                let done = cal.between(from, t.clamp(from, to));
+                let done = worked(t);
                 if done >= total {
                     line.amount
                 } else {

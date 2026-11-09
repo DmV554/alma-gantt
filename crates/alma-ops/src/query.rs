@@ -121,6 +121,14 @@ pub struct TaskView {
     pub critical: bool,
     /// Cost of the task and its descendants, in project currency (F-COST-07), rounded to cents.
     pub cost: f64,
+    /// `not_started`, `in_progress` or `complete` (ADR 0018); present once the plan has a
+    /// status date or the task has progress. A summary is complete when all its activities
+    /// are, in progress when any has started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<&'static str>,
+    /// Work left on a task in progress.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<String>,
 }
 
 impl TaskView {
@@ -133,8 +141,25 @@ impl TaskView {
 
 /// Every field name `TaskView` has.
 pub const TASK_FIELDS: &[&str] = &[
-    "id", "name", "wbs", "parent", "kind", "wbs_role", "duration", "start", "finish", "es", "ef",
-    "ls", "lf", "tf", "ff", "critical", "cost",
+    "id",
+    "name",
+    "wbs",
+    "parent",
+    "kind",
+    "wbs_role",
+    "duration",
+    "start",
+    "finish",
+    "es",
+    "ef",
+    "ls",
+    "lf",
+    "tf",
+    "ff",
+    "critical",
+    "cost",
+    "progress",
+    "remaining",
 ];
 
 pub use alma_layout::wbs_codes;
@@ -186,9 +211,53 @@ pub fn task_views(plan: &Plan, schedule: &Schedule) -> Vec<TaskView> {
                 ff: d.free_float.map(round),
                 critical: d.critical,
                 cost: crate::cost::money(costs.task_total[i]),
+                progress: progress_of(plan, schedule, &index, i),
+                remaining: match d.progress {
+                    alma_sched::cpm::Progress::InProgress { remaining, .. } => Some(
+                        alma_core::Duration {
+                            minutes: remaining,
+                            elapsed: d.duration.elapsed,
+                        }
+                        .display(units),
+                    ),
+                    _ => None,
+                },
             }
         })
         .collect()
+}
+
+/// Progress state of a task, rolled up for summaries; `None` when the plan tracks no progress.
+fn progress_of(
+    plan: &Plan,
+    schedule: &Schedule,
+    index: &PlanIndex,
+    i: usize,
+) -> Option<&'static str> {
+    use alma_sched::cpm::Progress;
+    let tracked = plan.project.status_date.is_some() || plan.tasks.iter().any(|t| t.has_progress());
+    if !tracked {
+        return None;
+    }
+    let leaves: Vec<Progress> = index
+        .leaves(i)
+        .into_iter()
+        .filter(|&l| schedule.tasks[l].in_network)
+        .map(|l| schedule.tasks[l].progress)
+        .collect();
+    let state = if !leaves.is_empty() && leaves.iter().all(|p| *p == Progress::Complete) {
+        Progress::Complete
+    } else if leaves.iter().any(|p| p.started()) {
+        Progress::InProgress {
+            done_until: 0,
+            resume: 0,
+            remaining: 0,
+            waits: false,
+        }
+    } else {
+        Progress::NotStarted
+    };
+    Some(crate::progress::state_name(state))
 }
 
 /// Filter for `alma ls`.
@@ -346,6 +415,31 @@ pub fn explain(plan: &Plan, schedule: &Schedule, id: &str) -> Option<Vec<Explain
                 Some(by),
             ),
             Driver::Rollup | Driver::Span => ("derived".into(), None),
+            Driver::Actual => {
+                let start = t.actual_start.or(t.actual_finish).map(|d| d.to_string());
+                let mut text = format!("started on {} (actual)", start.unwrap_or_default());
+                if let alma_sched::cpm::Progress::InProgress {
+                    resume, remaining, ..
+                } = d.progress
+                {
+                    text.push_str(&format!(
+                        "; {} remaining from {}",
+                        alma_core::duration::Duration::working(remaining).display(units),
+                        format_instant(resume)
+                    ));
+                }
+                (text, None)
+            }
+            Driver::StatusDate => (
+                format!(
+                    "work not started cannot start before the status date ({})",
+                    plan.project
+                        .status_date
+                        .map(|d| d.to_string())
+                        .unwrap_or_default()
+                ),
+                None,
+            ),
         };
         let mut because = because;
         // Name the first non-working calendar exception between the driver and the start.

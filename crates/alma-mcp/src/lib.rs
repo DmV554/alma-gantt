@@ -181,7 +181,9 @@ fn op_description(op: &str) -> &'static str {
         "unassign" => "Remove an assignment.",
         "cadence.add" => "Add a sprint cadence: COUNT equal iterations from START, ids <prefix>01…",
         "cadence.rm" => "Remove a cadence.",
-        "project.set" => "Set project keys: name, calendar, deadline, currency, description.",
+        "project.set" => {
+            "Set project keys: name, calendar, deadline, currency, description, status_date."
+        }
         "cal.add" => "Add a working calendar (workdays, hours like 09:00-13:00).",
         "cal.except" => "Add a holiday or blackout period to a calendar (dates inclusive).",
         "rule.set" => "Set a lint rule's severity for this plan (off, info, warn, error).",
@@ -200,6 +202,12 @@ fn op_description(op: &str) -> &'static str {
         "funding.rm" => "Remove a funding entry.",
         "level" => {
             "Resolve resource over-allocation: mode `leveling` delays tasks until their resources fit (the finish may move), `smoothing` only within free float, `off` turns it off. Saved in the plan; the result lists delayed tasks and what each waits for."
+        }
+        "progress.set" => {
+            "Record progress on a leaf task (ADR 0018): `start` and `finish` are the actual days, `remaining` the work left at the status date (default: duration minus the working time since the start). Started tasks stay at their actual dates; `clear` removes recorded progress first."
+        }
+        "progress.date" => {
+            "Set the status date. Work not started, and the remaining work of tasks in progress, is scheduled after it."
         }
         "settings.set" => {
             "Set or unset scheduling settings ([settings.schedule]): hours_per_day, days_per_week, late_anchor, critical_threshold, near_critical, phase, leveling, …"
@@ -315,6 +323,19 @@ pub fn tools() -> Vec<Tool> {
                 json!({
                     "baseline": { "type": "string", "description": "Default: the active one" },
                     "changed": { "type": "boolean", "description": "Only tasks that moved, changed cost or are new" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "cursor": { "type": "string" },
+                }),
+                &[],
+            ),
+        )),
+        read_only(Tool::new(
+            "progress",
+            "Progress at the status date: counts by state, forecast finish against the baseline, and the tasks that should be moving (started, finished, or expected by the baseline to have started). Record progress with progress_set and progress_date.",
+            schema(
+                json!({
+                    "all": { "type": "boolean", "description": "Every activity, not only those that should be moving" },
+                    "baseline": { "type": "string", "description": "Default: the active one, if any" },
                     "limit": { "type": "integer", "minimum": 1 },
                     "cursor": { "type": "string" },
                 }),
@@ -690,6 +711,23 @@ impl AlmaServer {
                 let page = Page::new(usize_arg(args, "limit"), str_arg(args, "cursor"));
                 Outcome::from(
                     &alma_ops::baseline::variance(plan, s, &snap, bool_arg(args, "changed"), page),
+                    false,
+                )
+            }
+            "progress" => {
+                let (path, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let snap = alma_ops::baseline::snapshot_for(plan, &path, str_arg(args, "baseline"))
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                let page = Page::new(usize_arg(args, "limit"), str_arg(args, "cursor"));
+                Outcome::from(
+                    &alma_ops::progress::report(
+                        plan,
+                        s,
+                        snap.as_ref(),
+                        bool_arg(args, "all"),
+                        page,
+                    ),
                     false,
                 )
             }

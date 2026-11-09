@@ -116,7 +116,7 @@ fn e_fmt_04_bad_duration() {
 #[test]
 fn e_fmt_05_reserved_key() {
     let parsed = parse(&format!(
-        "{HEAD}[[task]]\nid = \"a\"\nname = \"A\"\nactual_start = 2027-01-04\n"
+        "{HEAD}[[task]]\nid = \"a\"\nname = \"A\"\npoints = 3\n"
     ));
     assert_eq!(parsed.diagnostics[0].code, "E-FMT-05");
     assert!(parsed.diagnostics[0].message.contains("M4"));
@@ -299,6 +299,7 @@ const DOC_TABLES: &[(&str, &str)] = &[
     ("### 6.10 `[[reserve]]`", "reserve"),
     ("### 6.11 `[[risk]]`", "risk"),
     ("### 6.12 `[[funding]]`", "funding"),
+    ("### 6.13 `[[task]]`: progress", "task"),
 ];
 
 fn backticked(cell: &str) -> Vec<String> {
@@ -473,4 +474,46 @@ format = 0
     b.tasks.sort_by(|x, y| x.id.cmp(&y.id));
     assert_eq!(a, b);
     assert_eq!(alma_format::format_text(&out).unwrap(), out, "idempotent");
+}
+
+#[test]
+fn e_fmt_03_progress_fields_agree() {
+    let t = |extra: &str| format!("[[task]]\nid = \"a\"\nname = \"A\"\nduration = \"5d\"\n{extra}");
+    assert!(codes(&t("actual_start = 2027-01-04\nremaining = \"2d\"\n")).is_empty());
+    assert!(
+        codes(&t(
+            "actual_start = 2027-01-04\nactual_finish = 2027-01-08\n"
+        ))
+        .is_empty()
+    );
+    for bad in [
+        "actual_start = 2027-01-08\nactual_finish = 2027-01-04\n",
+        "actual_finish = 2027-01-08\n",
+        "remaining = \"2d\"\n",
+        "actual_start = 2027-01-04\nactual_finish = 2027-01-08\nremaining = \"1d\"\n",
+    ] {
+        assert_eq!(codes(&t(bad)), ["E-FMT-03"], "{bad}");
+    }
+    // A milestone is reached with either date alone.
+    assert!(
+        codes(
+            "[[task]]\nid = \"m\"\nname = \"M\"\nkind = \"milestone\"\nactual_finish = 2027-01-04\n"
+        )
+        .is_empty()
+    );
+    // Summaries and level-of-effort tasks take no progress.
+    assert_eq!(
+        codes(
+            "[[task]]\nid = \"s\"\nname = \"S\"\nactual_start = 2027-01-04\n\
+             [[task]]\nid = \"a\"\nparent = \"s\"\nname = \"A\"\nduration = \"1d\"\n"
+        ),
+        ["E-FMT-03"]
+    );
+    assert_eq!(
+        codes(
+            "[[task]]\nid = \"a\"\nname = \"A\"\nduration = \"1d\"\n\
+             [[task]]\nid = \"l\"\nname = \"L\"\nkind = \"loe\"\nspans = { from = \"a\", to = \"a\" }\nactual_start = 2027-01-04\n"
+        ),
+        ["E-FMT-03"]
+    );
 }

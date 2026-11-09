@@ -44,6 +44,12 @@ fields as `alma schema`). Every tool takes an optional `file`; mutations take `d
    `alma variance --changed` shows what slipped or got more expensive, and `alma scurve`
    shows planned value next to the forecast. Baselines are never overwritten: a revision is a
    new id with `--change CR-…`. Commit `.alma/baselines/` with the plan.
+8. Track progress. At each report date run `alma progress date YYYY-MM-DD`, then record
+   facts per task: `alma progress set <id> --start D` when it started, `--finish D` when it
+   finished, `--remaining 3d` when the work left differs from duration minus the working
+   days since the start. Started work stays at its actual dates; everything else is
+   rescheduled after the status date. `alma progress ls` shows what is moving, what is late to
+   start, and the forecast finish against the baseline.
 
 For many changes at once, write the operations to a file and run `alma apply ops.json`
 (all or nothing). `alma schema` prints the JSON Schema of operations.
@@ -103,6 +109,9 @@ alma scurve [--period month] [--csv] [--baseline b1]   # forecast and planned va
 alma baseline save <id> [--name "..."] [--change CR-12] [--reason "..."] [--date 2027-01-04]
 alma baseline ls
 alma variance [--baseline b1] [--changed] [--limit N]   # dates and cost vs the baseline
+alma progress date 2027-03-31            # the status date: progress is measured through it
+alma progress set <id> [--start D] [--finish D] [--remaining 3d] [--clear]
+alma progress ls [--all] [--baseline b1] # started, finished, late to start; forecast finish
 alma diff [--rev HEAD | --against old.alma.toml]   # what moved since then
 alma keys [task|project|calendar|resource|cadence|task.deps|task.estimate ...]   # field reference
 alma schema
@@ -129,6 +138,10 @@ alma guide
 - `kind`: `task` (default), `milestone`, `loe` (level of effort), `buffer` (time reserve).
   A task with children is a summary; do not give it a `kind`.
 - `wbs_role`: `deliverable`, `control_account`, `work_package`, `planning_package`.
+- Progress: dates are facts on leaf tasks (not summaries, not level of effort). A milestone is
+  reached with `--finish D` alone. Work started out of sequence keeps waiting for its
+  unfinished predecessors (`progress_logic = "retained_logic"`); `alma settings set
+  progress_logic=progress_override` lets it run from the status date instead.
 - Contract dates: use `--deadline` on the milestone, not a hard constraint. A missed deadline
   shows as negative float (`L-SCH-05`) without moving the task.
 

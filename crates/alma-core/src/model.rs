@@ -247,6 +247,16 @@ string_enum! {
 }
 
 string_enum! {
+    /// How the remaining work of a task that started out of sequence is scheduled (ADR 0018).
+    ProgressLogic {
+        /// The remaining work still waits for its unfinished predecessors.
+        RetainedLogic = "retained_logic",
+        /// Once a task has started, its links no longer hold back its remaining work.
+        ProgressOverride = "progress_override",
+    }
+}
+
+string_enum! {
     /// Reporting period.
     ReportingPeriod {
         /// One week.
@@ -480,6 +490,8 @@ pub struct Project {
     pub currency: Option<String>,
     /// Narrative.
     pub description: Option<String>,
+    /// Data date: progress is reported through the end of this day (ADR 0018).
+    pub status_date: Option<Date>,
 }
 
 /// `[settings.schedule]`.
@@ -509,6 +521,8 @@ pub struct ScheduleSettings {
     pub leveling: Leveling,
     /// How resource calendars combine with task calendars.
     pub resource_calendars: ResourceCalendars,
+    /// How out-of-sequence progress is scheduled (ADR 0018).
+    pub progress_logic: ProgressLogic,
 }
 
 impl Default for ScheduleSettings {
@@ -526,6 +540,7 @@ impl Default for ScheduleSettings {
             three_point: Dist::Beta,
             leveling: Leveling::Off,
             resource_calendars: ResourceCalendars::Intersect,
+            progress_logic: ProgressLogic::RetainedLogic,
         }
     }
 }
@@ -713,6 +728,12 @@ pub struct Task {
     pub assign: Vec<Assignment>,
     /// Fixed cost.
     pub fixed_cost: Option<FixedCost>,
+    /// Progress: the day work started (ADR 0018).
+    pub actual_start: Option<Date>,
+    /// Progress: the day work finished.
+    pub actual_finish: Option<Date>,
+    /// Progress: working time left on a started task at the status date.
+    pub remaining: Option<Duration>,
     /// Lint codes silenced on this node.
     pub allow: Vec<String>,
     /// Tags.
@@ -754,11 +775,21 @@ impl Task {
             deps: Vec::new(),
             assign: Vec::new(),
             fixed_cost: None,
+            actual_start: None,
+            actual_finish: None,
+            remaining: None,
             allow: Vec::new(),
             tags: Vec::new(),
             custom: BTreeMap::new(),
             span: None,
         }
+    }
+}
+
+impl Task {
+    /// True when any progress is recorded on the task.
+    pub fn has_progress(&self) -> bool {
+        self.actual_start.is_some() || self.actual_finish.is_some() || self.remaining.is_some()
     }
 }
 

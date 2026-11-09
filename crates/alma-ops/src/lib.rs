@@ -8,6 +8,7 @@ pub mod export;
 pub mod files;
 pub mod finance;
 pub mod mutate;
+pub mod progress;
 pub mod query;
 pub mod resources;
 pub mod schema;

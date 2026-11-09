@@ -92,13 +92,18 @@ pub fn bookings(plan: &Plan, schedule: &Schedule) -> Vec<Vec<Booking>> {
         if d.ef <= d.es || plan.tasks[i].kind == TaskKind::Milestone {
             continue;
         }
-        for &(r, units) in list {
-            out[r].push(Booking {
-                start: d.es,
-                end: d.ef,
-                units,
-                task: i,
-            });
+        for (start, end) in d.work_spans() {
+            if end <= start {
+                continue;
+            }
+            for &(r, units) in list {
+                out[r].push(Booking {
+                    start,
+                    end,
+                    units,
+                    task: i,
+                });
+            }
         }
     }
     out

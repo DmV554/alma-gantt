@@ -350,6 +350,30 @@ pub enum Op {
         /// Id.
         id: String,
     },
+    /// Record progress on a task (ADR 0018): actual dates and remaining work.
+    #[serde(rename = "progress.set")]
+    ProgressSet {
+        /// Task id.
+        id: String,
+        /// Day work started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start: Option<String>,
+        /// Day work finished.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finish: Option<String>,
+        /// Working time left at the status date (a duration such as `3d`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remaining: Option<String>,
+        /// Remove the task's recorded progress first.
+        #[serde(default)]
+        clear: bool,
+    },
+    /// Set the status date: the day progress is measured through (`[project] status_date`).
+    #[serde(rename = "progress.date")]
+    ProgressDate {
+        /// The day, `YYYY-MM-DD`.
+        date: String,
+    },
     /// Set or unset scheduling settings (`[settings.schedule]`).
     #[serde(rename = "settings.set")]
     SettingsSet {
@@ -963,7 +987,17 @@ fn setting_item(key: &str, v: &FieldValue) -> Item {
 }
 
 fn is_date_key(key: &str) -> bool {
-    matches!(key, "deadline" | "start" | "date" | "from" | "to")
+    matches!(
+        key,
+        "deadline"
+            | "start"
+            | "date"
+            | "from"
+            | "to"
+            | "status_date"
+            | "actual_start"
+            | "actual_finish"
+    )
 }
 
 /// Inserts `key` into `table` at its canonical position (registry order), keeping every other
@@ -1825,6 +1859,58 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
                 fields.insert("leveling".to_string(), FieldValue::Text(mode.to_string()));
             }
             apply_op(doc, &Op::SettingsSet { fields, unset })
+        }
+        Op::ProgressSet {
+            id,
+            start,
+            finish,
+            remaining,
+            clear,
+        } => {
+            let i = require_task(doc, id)?;
+            if !clear && start.is_none() && finish.is_none() && remaining.is_none() {
+                return Err(op_err(
+                    "E-OPS-04",
+                    "nothing to record: give start, finish, remaining or clear",
+                    &[id],
+                ));
+            }
+            let mut fields = BTreeMap::new();
+            for (key, v) in [
+                ("actual_start", start),
+                ("actual_finish", finish),
+                ("remaining", remaining),
+            ] {
+                if let Some(v) = v {
+                    if key != "remaining" && v.parse::<jiff::civil::Date>().is_err() {
+                        return Err(op_err(
+                            "E-OPS-04",
+                            format!("{key} `{v}` is not a date like 2027-03-01"),
+                            &[id],
+                        ));
+                    }
+                    fields.insert(key.to_string(), FieldValue::Text(v.clone()));
+                }
+            }
+            let table = tasks_mut(doc).get_mut(i).expect("index from require_task");
+            if *clear {
+                for key in ["actual_start", "actual_finish", "remaining"] {
+                    table.remove(key);
+                }
+            }
+            set_task_fields(table, id, &fields)
+        }
+        Op::ProgressDate { date } => {
+            if date.parse::<jiff::civil::Date>().is_err() {
+                return Err(op_err(
+                    "E-OPS-04",
+                    format!("status date `{date}` is not a date like 2027-03-31"),
+                    &[],
+                ));
+            }
+            let mut fields = BTreeMap::new();
+            fields.insert("status_date".to_string(), FieldValue::Text(date.clone()));
+            apply_op(doc, &Op::ProjectSet { fields })
         }
         Op::SettingsSet { fields, unset } => {
             let allowed = |key: &str| matches!(keys::lookup("settings.schedule", key), Some(def) if !matches!(def.tier, keys::Tier::R(_)));

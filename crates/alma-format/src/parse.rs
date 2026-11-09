@@ -423,6 +423,7 @@ fn read_plan(cx: &mut Cx, root: &toml_edit::Table) -> Option<Plan> {
         deadline: pf.date(cx, "deadline"),
         currency: pf.str(cx, "currency"),
         description: pf.str(cx, "description"),
+        status_date: pf.date(cx, "status_date"),
     };
 
     let rules = read_rules(cx, root);
@@ -558,6 +559,14 @@ fn read_settings(cx: &mut Cx, root: &toml_edit::Table) -> ScheduleSettings {
         ResourceCalendars::VALUES,
     ) {
         s.resource_calendars = v;
+    }
+    if let Some(v) = f.enumerated(
+        cx,
+        "progress_logic",
+        ProgressLogic::parse,
+        ProgressLogic::VALUES,
+    ) {
+        s.progress_logic = v;
     }
     s
 }
@@ -1029,6 +1038,9 @@ fn read_task(cx: &mut Cx, f: &Fields<'_>) -> Option<Task> {
         }
     }
     t.reserve = f.enumerated(cx, "reserve", ReserveKind::parse, ReserveKind::VALUES);
+    t.actual_start = f.date(cx, "actual_start");
+    t.actual_finish = f.date(cx, "actual_finish");
+    t.remaining = f.duration(cx, "remaining", false);
     if let Some(item) = f.get("deps") {
         match tables_of(item) {
             Some(list) => {
@@ -1363,6 +1375,66 @@ fn validate(cx: &mut Cx, plan: &Plan, root: &toml_edit::Table) {
                 task_span(i),
             )
             .ids([t.id.clone()]);
+        }
+    }
+
+    // Progress (ADR 0018): recorded on leaf work, with dates and remaining work that agree.
+    for (i, t) in plan.tasks.iter().enumerate() {
+        if !t.has_progress() {
+            continue;
+        }
+        let mut bad = |msg: String, hint: &str| {
+            cx.err("E-FMT-03", msg, task_span(i))
+                .ids([t.id.clone()])
+                .hint(hint.to_string());
+        };
+        if children[i] > 0 {
+            bad(
+                format!(
+                    "task `{}` is a summary; progress is recorded on its leaf tasks",
+                    t.id
+                ),
+                "remove actual_start, actual_finish and remaining from the summary",
+            );
+            continue;
+        }
+        if t.kind == TaskKind::Loe {
+            bad(
+                format!(
+                    "task `{}` is level of effort; its dates come from the tasks it spans",
+                    t.id
+                ),
+                "record progress on the spanned tasks instead",
+            );
+            continue;
+        }
+        if let (Some(s), Some(f)) = (t.actual_start, t.actual_finish)
+            && f < s
+        {
+            bad(
+                format!("task `{}` finishes ({f}) before it starts ({s})", t.id),
+                "fix actual_start or actual_finish",
+            );
+        }
+        if t.actual_start.is_none() {
+            if t.actual_finish.is_some() && t.kind != TaskKind::Milestone {
+                bad(
+                    format!("task `{}` has actual_finish but no actual_start", t.id),
+                    "set actual_start too: `alma progress ID --start DATE --finish DATE`",
+                );
+            }
+            if t.remaining.is_some() {
+                bad(
+                    format!("task `{}` has remaining work but has not started", t.id),
+                    "set actual_start, or change `duration` for work not started yet",
+                );
+            }
+        }
+        if t.actual_finish.is_some() && t.remaining.is_some_and(|r| r.minutes > 0) {
+            bad(
+                format!("task `{}` is finished but has remaining work", t.id),
+                "remove `remaining`, or remove `actual_finish` if work is left",
+            );
         }
     }
 

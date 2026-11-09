@@ -127,7 +127,8 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 | `deadline` | A | date | none | Project deadline; the backward pass anchor when `late_anchor = "deadline"` |
 | `currency` | A | string | none | Currency label for money values (`"UF"`, `"USD"`), shown by cost reports |
 | `description` | B | string | none | Narrative, exported with reports |
-| `status_date`, `estimate_class`, `fx` | R (M4/M2) | | | |
+| `status_date` | A | date | none | Data date: progress is reported through the end of this day. Work not started is scheduled after it (ADR 0018) |
+| `estimate_class`, `fx` | R (M2) | | | |
 
 ### `[settings.schedule]`
 | Key | Tier | Type | Default | Meaning |
@@ -145,7 +146,8 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 | `three_point` | A | `beta \| triangular` | `beta` | Formula for tE (F-SCH-03/04) |
 | `leveling` | A | `off \| smoothing \| leveling` | `off` | How the scheduler resolves resource over-allocation (ADR 0011). `smoothing` delays tasks within their free float only; `leveling` may move the finish date |
 | `resource_calendars` | A | `intersect \| ignore` | `intersect` | With `intersect`, a task assigned to a resource that has its own `calendar` works only when both calendars do (ADR 0017); no shared working time is `L-RES-03` |
-| `progress_logic`, `agile_drives`, `control_threshold` | R (M4) | | | |
+| `progress_logic` | A | `retained_logic \| progress_override` | `retained_logic` | How the remaining work of a started task is scheduled. `retained_logic`: it still waits for its unfinished predecessors. `progress_override`: once started, its links no longer hold it back (ADR 0018) |
+| `agile_drives`, `control_threshold` | R (M4) | | | |
 
 `[settings.cost]` is reserved (R, M2).
 
@@ -229,8 +231,7 @@ Per-weekday hours and per-resource exceptions are reserved for M2 (keys `week`, 
 | 28 | `tags` | B | array of strings | |
 | 29 | `custom` | B | table | Free-form fields (§3.4) |
 
-Reserved on tasks (R): `actual_start`, `actual_finish`, `remaining`, `physical_pct`,
-`progress_rule`, `ev_method` (M4); `points`, `iteration`, `kind = story \| epic` (M4); `crash`,
+Reserved on tasks (R): `physical_pct`, `progress_rule`, `ev_method` (M4); `points`, `iteration`, `kind = story \| epic` (M4); `crash`,
 `overlap` (M3+); `risk_ref`, `payment`, `payment_ref`, `requirement_refs`, `contract`,
 `account_code`, `org_unit`, `effort_type`, `apportion_to`, `location` (M2+).
 
@@ -325,6 +326,18 @@ any day is `L-COST-04` (a warning while `phase = "draft"`, an error after).
 | `amount` | money string | required | |
 | `source` | string | none | Client advance, loan, grant… |
 
+### 6.13 `[[task]]`: progress (tier A)
+Progress recorded at `[project] status_date` (ADR 0018). Only leaf tasks that are not level of
+effort take these keys. Dates are facts: the scheduler fixes a started task at its
+`actual_start`, and a finished one at both dates. It schedules work not started, and the
+remaining work of a task in progress, from the first working minute after the status date.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `actual_start` | date | none | Day work started (its first working minute) |
+| `actual_finish` | date | none | Day work finished (its last working minute). Needs `actual_start`, except on milestones, where either date marks the milestone as reached |
+| `remaining` | duration | duration − working time from `actual_start` to the status date | Work left on a started task at the status date |
+
 ---
 
 ## 7. Cross-field rules enforced by the parser
@@ -337,6 +350,9 @@ These are `E-*` errors because the plan cannot be scheduled with them; everythin
 - `spans` only with `kind = "loe"`, `reserve` only with `kind = "buffer"`, `class` only with
   `kind = "milestone"` (`E-FMT-03`).
 - A calendar has at least one working minute per week (`E-CAL-01`).
+- Progress keys only on leaf tasks that are not level of effort; `actual_finish` not before
+  `actual_start`; `actual_finish` and `remaining` need `actual_start` (a milestone may take
+  `actual_finish` alone); a finished task has no `remaining` work (`E-FMT-03`).
 
 ---
 

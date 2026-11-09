@@ -193,6 +193,9 @@ enum Cmd {
     /// Baselines: frozen copies of dates and costs to measure the plan against.
     #[command(subcommand)]
     Baseline(BaselineCmd),
+    /// Progress: actual dates and remaining work at the status date (ADR 0018).
+    #[command(subcommand)]
+    Progress(ProgressCmd),
     /// How the current schedule differs from a baseline: dates and cost per task.
     Variance {
         /// Baseline id (default: the active one).
@@ -560,6 +563,50 @@ enum BaselineCmd {
     },
     /// List baselines with the finish and budget each one promised.
     Ls,
+}
+
+#[derive(Subcommand)]
+enum ProgressCmd {
+    /// Record progress on a task: the day it started, the day it finished, the work left.
+    Set {
+        /// Task id.
+        id: String,
+        /// Day work started (YYYY-MM-DD).
+        #[arg(long)]
+        start: Option<String>,
+        /// Day work finished (YYYY-MM-DD).
+        #[arg(long)]
+        finish: Option<String>,
+        /// Working time left at the status date, e.g. 3d (default: duration minus the
+        /// working time since the start).
+        #[arg(long)]
+        remaining: Option<String>,
+        /// Remove the task's recorded progress first (alone: remove it).
+        #[arg(long)]
+        clear: bool,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Set the status date: progress is measured through the end of this day, and work not
+    /// done is scheduled after it.
+    Date {
+        /// The day (YYYY-MM-DD).
+        date: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Tasks started or finished, and tasks the baseline expected to have started by the
+    /// status date, with forecast finish and finish variance.
+    Ls {
+        /// Every activity, not only those that should be moving.
+        #[arg(long)]
+        all: bool,
+        /// Baseline id (default: the active one, if any).
+        #[arg(long)]
+        baseline: Option<String>,
+        #[command(flatten)]
+        page: PageArgs,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1443,6 +1490,88 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 }
             }
             Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Progress(ProgressCmd::Ls {
+            all,
+            baseline,
+            page,
+        }) => {
+            let (path, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let plan = l.plan.as_ref().unwrap();
+            let snap = alma_ops::baseline::snapshot_for(plan, &path, baseline.as_deref())
+                .map_err(Usage)?;
+            let r = alma_ops::progress::report(
+                plan,
+                l.schedule.as_ref().unwrap(),
+                snap.as_ref(),
+                all,
+                Page::new(page.limit, page.cursor.as_deref()),
+            );
+            if json {
+                print_json(&r);
+            } else {
+                let c = r.counts;
+                println!(
+                    "status date {}: {} complete, {} in progress, {} not started; finish {}{}",
+                    r.status_date.as_deref().unwrap_or("(none)"),
+                    c.complete,
+                    c.in_progress,
+                    c.not_started,
+                    r.finish,
+                    match (&r.baseline_finish, r.finish_var) {
+                        (Some(b), Some(v)) => format!(" (baseline {b}, {v:+}d)"),
+                        _ => String::new(),
+                    }
+                );
+                for t in &r.tasks {
+                    let mut line = format!("  {}\t{}", t.id, t.state.replace('_', " "));
+                    if let Some(rem) = &t.remaining {
+                        line.push_str(&format!(", {rem} left"));
+                    }
+                    line.push_str(&format!("\tfinish {}", t.finish));
+                    if let Some(v) = t.finish_var {
+                        line.push_str(&format!(" ({v:+}d)"));
+                    }
+                    if t.late_start {
+                        line.push_str("\tlate to start");
+                    }
+                    if t.critical {
+                        line.push_str("\tcritical");
+                    }
+                    println!("{line}");
+                }
+                if let Some(c) = &r.next_cursor {
+                    println!("more: --cursor {c}");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Progress(c) => {
+            let (op, m) = match c {
+                ProgressCmd::Set {
+                    id,
+                    start,
+                    finish,
+                    remaining,
+                    clear,
+                    m,
+                } => (
+                    Op::ProgressSet {
+                        id,
+                        start,
+                        finish,
+                        remaining,
+                        clear,
+                    },
+                    m,
+                ),
+                ProgressCmd::Date { date, m } => (Op::ProgressDate { date }, m),
+                ProgressCmd::Ls { .. } => unreachable!("handled above"),
+            };
+            mutation(file, &[op], m.dry_run, json)
         }
         Cmd::Variance {
             baseline,

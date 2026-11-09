@@ -269,6 +269,22 @@ fn arb_op() -> impl Strategy<Value = Op> {
                 fields: fields(&[(k, v)]),
                 unset: Vec::new(),
             }),
+        (
+            any::<usize>(),
+            proptest::option::of(1u32..28),
+            proptest::option::of(1u32..28),
+            proptest::option::of(prop_oneof![Just("2d"), Just("0d"), Just("x")]),
+            any::<bool>(),
+        )
+            .prop_map(|(t, s, f, r, clear)| Op::ProgressSet {
+                id: id(t),
+                start: s.map(|d| format!("2027-02-{d:02}")),
+                finish: f.map(|d| format!("2027-03-{d:02}")),
+                remaining: r.map(str::to_string),
+                clear,
+            }),
+        prop_oneof![Just("2027-03-15"), Just("2027-13-01")]
+            .prop_map(|d| Op::ProgressDate { date: d.into() }),
         (1u32..5).prop_map(|c| Op::CadenceAdd {
             id: "team-b".into(),
             start: "2027-05-03".into(),

@@ -41,6 +41,13 @@ use Severity::{Error as E, Info as I, Warn as W};
 
 /// Every rule implemented, in code order.
 pub const RULES: &[Rule] = &[
+    rule("L-BAS-01", Some(W), "Progress recorded but no baseline"),
+    rule("L-BAS-02", Some(E), "Progress recorded but no status date"),
+    rule(
+        "L-BAS-04",
+        Some(E),
+        "Actual date after the status date, or progress against unmet mandatory logic",
+    ),
     rule("L-BAS-05", Some(I), "Rebaseline without a change reference"),
     rule(
         "L-CAL-01",
@@ -788,6 +795,134 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                         format_instant(d.lf)
                     ),
                     vec![id.clone()],
+                );
+            }
+        }
+    }
+
+    // Progress (knowledge notes, scheduling §4.14 and §4.16; ADR 0018).
+    let progressed: Vec<usize> = (0..n).filter(|&i| plan.tasks[i].has_progress()).collect();
+    if !progressed.is_empty() {
+        let ids: Vec<String> = progressed
+            .iter()
+            .take(5)
+            .map(|&i| plan.tasks[i].id.clone())
+            .collect();
+        let hint = |l: &mut Linter, before: usize, hint: &str| {
+            if l.out.len() > before
+                && let Some((_, d)) = l.out.last_mut()
+            {
+                *d = d.clone().with_hint(hint.to_string());
+            }
+        };
+        if plan.baselines.is_empty() {
+            let before = l.out.len();
+            l.report(
+                usize::MAX,
+                "L-BAS-01",
+                W,
+                format!(
+                    "progress is recorded on {} task(s) ({}) but the plan has no baseline to measure it against",
+                    progressed.len(),
+                    ids.join(", ")
+                ),
+                ids.clone(),
+            );
+            hint(
+                &mut l,
+                before,
+                "save a baseline before recording progress: `alma baseline save ID`",
+            );
+        }
+        if plan.project.status_date.is_none() {
+            let before = l.out.len();
+            l.report(
+                usize::MAX,
+                "L-BAS-02",
+                E,
+                format!(
+                    "progress is recorded on {} task(s) ({}) but [project] has no status_date",
+                    progressed.len(),
+                    ids.join(", ")
+                ),
+                ids,
+            );
+            hint(
+                &mut l,
+                before,
+                "set the day the progress was measured: `alma progress date YYYY-MM-DD`",
+            );
+        }
+    }
+    if let Some(status) = plan.project.status_date {
+        for &i in &progressed {
+            let t = &plan.tasks[i];
+            for (what, date) in [
+                ("actual_start", t.actual_start),
+                ("actual_finish", t.actual_finish),
+            ] {
+                if let Some(d) = date.filter(|d| *d > status) {
+                    l.on(
+                        i,
+                        "L-BAS-04",
+                        format!(
+                            "`{}` has {what} {d}, after the status date {status}: progress cannot be recorded in the future",
+                            t.id
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    for &i in &progressed {
+        if plan.tasks[i].actual_start.is_none() && plan.tasks[i].actual_finish.is_none() {
+            continue;
+        }
+        // Links on the task and on its ancestors apply to it.
+        let mut owners = vec![i];
+        let mut cur = l.index.parent[i];
+        while let Some(p) = cur {
+            owners.push(p);
+            cur = l.index.parent[p];
+        }
+        let mut waiting: Vec<String> = Vec::new();
+        for &o in &owners {
+            for d in &plan.tasks[o].deps {
+                if d.kind != DepType::Fs || d.nature != DepNature::Mandatory {
+                    continue;
+                }
+                let Some(&p) = l.index.by_id.get(&d.pred) else {
+                    continue;
+                };
+                for leaf in l.index.leaves(p) {
+                    let pt = &plan.tasks[leaf];
+                    let started = pt.actual_start.is_some() || pt.actual_finish.is_some();
+                    if !started && pt.kind != TaskKind::Loe && !waiting.contains(&pt.id) {
+                        waiting.push(pt.id.clone());
+                    }
+                }
+            }
+        }
+        if !waiting.is_empty() {
+            let id = plan.tasks[i].id.clone();
+            let mut ids = vec![id.clone()];
+            ids.extend(waiting.iter().cloned());
+            let before = l.out.len();
+            l.report(
+                i,
+                "L-BAS-04",
+                E,
+                format!(
+                    "`{id}` has started but its mandatory finish-to-start predecessor(s) {} have not",
+                    waiting.join(", ")
+                ),
+                ids,
+            );
+            if l.out.len() > before
+                && let Some((_, d)) = l.out.last_mut()
+            {
+                *d = d.clone().with_hint(
+                    "record the predecessors' actual dates, or, if the work really overlapped, make the link discretionary or SS",
                 );
             }
         }

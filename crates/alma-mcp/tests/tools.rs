@@ -341,3 +341,45 @@ fn concurrent_writes_do_not_interleave() {
         );
     }
 }
+
+#[test]
+fn progress_tools() {
+    let d = Dir::new("progress");
+    let s = d.server();
+    let r = s.call(
+        "baseline_save",
+        &args(json!({ "id": "b1", "date": "2027-01-04" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("progress_date", &args(json!({ "date": "2027-02-26" })));
+    assert!(!r.is_error, "{}", r.json);
+    let before = d.text();
+    let r = s.call(
+        "progress_set",
+        &args(
+            json!({ "id": "discovery", "start": "2027-01-04", "remaining": "2d", "dry_run": true }),
+        ),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(d.text(), before);
+    let r = s.call(
+        "progress_set",
+        &args(json!({ "id": "discovery", "start": "2027-01-04", "remaining": "2d" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call(
+        "progress_set",
+        &args(json!({ "id": "mgmt", "start": "2027-01-04" })),
+    );
+    assert!(r.is_error);
+    assert_eq!(r.json["errors"][0]["code"], "E-FMT-03");
+    let r = s.call("progress", &args(json!({})));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["counts"]["in_progress"], 1);
+    let rows = r.json["tasks"].as_array().unwrap();
+    let disc = rows.iter().find(|t| t["id"] == "discovery").unwrap();
+    assert_eq!(disc["remaining"], "2d");
+    // The kickoff milestone was due on the first day and is not marked as reached.
+    let kick = rows.iter().find(|t| t["id"] == "kickoff").unwrap();
+    assert_eq!(kick["late_start"], true);
+}

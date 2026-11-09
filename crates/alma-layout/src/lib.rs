@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use alma_core::model::{DepType, Plan, TaskKind};
 use alma_core::time::{DAY, Instant, date_of_day, day_number, day_of, start_of, weekday};
-use alma_sched::cpm::Calendars;
+use alma_sched::cpm::{Calendars, Progress};
 use alma_sched::{PlanIndex, Schedule};
 use jiff::civil::Date;
 
@@ -735,15 +735,50 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
                 stroke: Some(color),
                 dashed: true,
             }),
-            TaskKind::Task => p.push(Prim::Rect {
-                x: x1,
-                y: mid - bar_h / 2.0,
-                w: (x2 - x1).max(1.5),
-                h: bar_h,
-                fill: Some(color),
-                stroke: None,
-                dashed: false,
-            }),
+            TaskKind::Task => {
+                // A task waiting out of sequence works in two spans, joined by a thin line.
+                let spans = d.work_spans();
+                if let [(_, a), (b, _)] = spans.as_slice() {
+                    p.push(Prim::Line {
+                        x1: x_of(*a),
+                        y1: mid,
+                        x2: x_of(*b),
+                        y2: mid,
+                        stroke: color,
+                        width: 1.0,
+                    });
+                }
+                for (a, b) in spans {
+                    let (xa, xb) = (x_of(a), x_of(b));
+                    p.push(Prim::Rect {
+                        x: xa,
+                        y: mid - bar_h / 2.0,
+                        w: (xb - xa).max(1.5),
+                        h: bar_h,
+                        fill: Some(color),
+                        stroke: None,
+                        dashed: false,
+                    });
+                }
+                // Work done: a dark stripe through the bar (ADR 0018).
+                let done = match d.progress {
+                    Progress::Complete => Some(d.ef),
+                    Progress::InProgress { done_until, .. } => Some(done_until.min(d.ef)),
+                    Progress::NotStarted => None,
+                };
+                if let Some(done) = done.filter(|&e| e > d.es) {
+                    let h = bar_h * 0.3;
+                    p.push(Prim::Rect {
+                        x: x1,
+                        y: mid - h / 2.0,
+                        w: (x_of(done) - x1).max(1.0),
+                        h,
+                        fill: Some(theme.ink),
+                        stroke: None,
+                        dashed: false,
+                    });
+                }
+            }
         }
         if t.kind != TaskKind::Milestone {
             cut_marks(&mut p, x1, x2, left, left + chart_w, mid, theme.bg);
@@ -779,7 +814,37 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
             }
         }
     }
+    // The status date: work before the line is reported, work after it is forecast.
+    if let Some(status) = plan.project.status_date {
+        let x = x_of(start_of(status) + DAY);
+        p.push(Prim::Line {
+            x1: x,
+            y1: top,
+            x2: x,
+            y2: top + rows.len() as f64 * row_h,
+            stroke: theme.ink,
+            width: 1.2,
+        });
+    }
     p.push(Prim::ClipEnd);
+    if let Some(status) = plan.project.status_date {
+        let x = x_of(start_of(status) + DAY);
+        if x >= left && x <= left + chart_w {
+            p.push(text(
+                x,
+                title_h * 0.65,
+                format!(
+                    "status {} {}",
+                    status.day(),
+                    MONTHS[(status.month() - 1) as usize]
+                ),
+                small,
+                Weight::Bold,
+                Anchor::Middle,
+                theme.ink,
+            ));
+        }
+    }
 
     DisplayList {
         width,

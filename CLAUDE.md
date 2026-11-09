@@ -14,8 +14,12 @@ tool, with agents doing most of the planning and humans able to edit anything by
 
 - Milestones: **M0** (engine, file format, agent CLI) and **M0.5** (MCP server, `alma mcp`,
   ADR 0010) are done. **M2** (resources, costs, leveling, baselines) is done too, built ahead of
-  M1 so agents get resource and cost checks before the desktop editor exists. Next is M1 or
-  M4 (progress and earned value). See `SPEC.md` §5.
+  M1 so agents get resource and cost checks before the desktop editor exists. **M4** (agile and
+  tracking) is in progress on `feat/m4-progress`. See `SPEC.md` §5.
+- M4 so far: progress and the status date (ADR 0018). Actual dates and remaining work on leaf
+  tasks, rescheduling after the status date with retained logic or progress override,
+  `L-BAS-01/02/04`, and `alma progress date|set|ls`. Next: earned value (EV methods, actual
+  cost, `alma evm`), `alma baseline revise`, then iterations and burndown.
 - M2: resource usage and over-allocation (`L-RES-01/02`, `alma res ls|usage`), leveling
   and smoothing as a schedule setting (`alma level`, ADR 0011), `settings.set`, costs and the
   forecast S-curve (`alma cost`, `alma scurve`, `alma res set`, ADR 0012), baselines with
@@ -34,8 +38,8 @@ tool, with agents doing most of the planning and humans able to edit anything by
   built the hybrid plan from a written brief using only `alma guide`, replayed in CI.
 - Charts: the resource histogram and the S-curve render through the same display list as the
   Gantt chart (`alma export --chart histogram|scurve`, MCP `render`).
-- Known gaps, by design until later milestones: progress, earned value and linking tasks to
-  sprints (M4); print and interop (M3); text widths are estimated (ADR 0009).
+- Known gaps, by design until later milestones: earned value and linking tasks to sprints
+  (rest of M4); print and interop (M3); text widths are estimated (ADR 0009).
 - `docs/format.md` is the normative reference for plan files (ADRs 0005–0008). Read it before
   touching `alma-format` or the model.
 - `examples/hybrid-terminal.alma.toml` is the **target fixture** for M0; making it parse,
@@ -48,7 +52,7 @@ tool, with agents doing most of the planning and humans able to edit anything by
 | Path | What it is |
 |---|---|
 | `SPEC.md` | Product and technical spec. The source of truth |
-| `docs/adr/` | Architecture decisions (0001–0017 accepted). Template: `0000-template.md` |
+| `docs/adr/` | Architecture decisions (0001–0018 accepted). Template: `0000-template.md` |
 | `docs/format.md` | Normative reference of the plan file format |
 | `docs/knowledge/` | Project-management reference notes from PMBOK 6, the WBS standard, the Agile Practice Guide and estimation sources. Each concept maps to model fields, engine behavior, lint rules (Annex A) and formulas (Annex B) |
 | `crates/alma-core` | Domain model: no I/O, no UI |

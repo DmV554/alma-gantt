@@ -663,7 +663,7 @@ fn settings_set_and_unset() {
     assert!(!p.text().contains("phase ="));
     // Unknown and reserved keys are refused, with the list of valid ones.
     let before = p.text();
-    for bad in ["speed=1", "progress_logic=retained"] {
+    for bad in ["speed=1", "agile_drives=velocity_forecast"] {
         let (code, v) = p.json(&["settings", "set", bad]);
         assert_eq!(
             (code, v["errors"][0]["code"].as_str()),
@@ -1115,4 +1115,132 @@ fn cost_workbook_is_deterministic() {
     let (code, v) = p.json(&["export", "-", "--format", "xlsx"]);
     assert_eq!(code, 2);
     assert!(v["errors"][0]["message"].as_str().unwrap().contains("XLSX"));
+}
+
+#[test]
+fn progress_status_date_and_report() {
+    let p = Plan::new("progress");
+    // No status date and no progress: the report still answers, with nothing moving.
+    let (code, v) = p.json(&["progress", "ls"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(v.get("status_date").is_none());
+    assert_eq!(v["total"], 0);
+    let (code, _) = p.json(&["baseline", "save", "b1", "--date", "2027-01-04"]);
+    assert_eq!(code, 0);
+
+    // The status date: a dry run writes nothing; the real run adds one line to [project].
+    let before = p.text();
+    let (code, v) = p.json(&["progress", "date", "2027-02-26", "--dry-run"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(!v["changed"].as_array().unwrap().is_empty());
+    assert_eq!(p.text(), before);
+    let (code, v) = p.json(&["progress", "date", "2027-02-26"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(changed_lines(&before, &p.text()), 1);
+    assert!(p.text().contains("status_date = 2027-02-26\n"));
+
+    for args in [
+        &["kickoff", "--finish", "2027-01-04"][..],
+        &[
+            "discovery",
+            "--start",
+            "2027-01-04",
+            "--finish",
+            "2027-02-17",
+        ],
+        &["decision-gate", "--finish", "2027-02-17"],
+        &["platform-env", "--start", "2027-02-18", "--remaining", "3d"],
+    ] {
+        let mut a = vec!["progress", "set"];
+        a.extend_from_slice(args);
+        let (code, v) = p.json(&a);
+        assert_eq!(code, 0, "{args:?}: {v}");
+    }
+    let text = p.text();
+    assert!(
+        text.contains("actual_start = 2027-02-18\nremaining = \"3d\"\n"),
+        "{text}"
+    );
+    let (code, _) = p.json(&["fmt", "--check"]);
+    assert_eq!(code, 0, "progress keys keep the canonical layout");
+
+    let (code, v) = p.json(&["progress", "ls"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["status_date"], "2027-02-26");
+    assert_eq!(v["counts"]["complete"], 3);
+    assert_eq!(v["counts"]["in_progress"], 1);
+    let row = |id: &str| {
+        v["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id} not listed: {v}"))
+    };
+    let env = row("platform-env");
+    assert_eq!(env["state"], "in_progress");
+    assert_eq!(env["remaining"], "3d");
+    assert_eq!(env["finish"], "2027-03-03");
+    assert_eq!(row("kickoff")["finish_var"], 0.0, "reached on its day");
+    assert_eq!(row("gate-ocr-procure")["late_start"], true);
+    let (_, all) = p.json(&["progress", "ls", "--all", "--limit", "2"]);
+    assert_eq!(all["tasks"].as_array().unwrap().len(), 2);
+    assert!(all["next_cursor"].is_string());
+
+    // Task views and explain show progress.
+    let (_, v) = p.json(&["show", "platform-env"]);
+    assert_eq!(
+        (v["progress"].as_str(), v["remaining"].as_str()),
+        (Some("in_progress"), Some("3d"))
+    );
+    let (_, v) = p.json(&["show", "platform"]);
+    assert_eq!(v["progress"], "in_progress", "a summary rolls up");
+    let (_, v) = p.json(&["explain", "platform-env"]);
+    assert!(v.to_string().contains("(actual)"), "{v}");
+
+    // Refused changes leave the file byte-identical, with a code and the ids involved.
+    let before = p.text();
+    for (args, code) in [
+        (&["mgmt", "--start", "2027-01-04"][..], "E-FMT-03"),
+        (&["platform-cicd"], "E-OPS-04"),
+        (&["platform-cicd", "--start", "yesterday"], "E-OPS-04"),
+        (&["platform-cicd", "--remaining", "2d"], "E-FMT-03"),
+        (&["nope", "--start", "2027-01-04"], "E-OPS-02"),
+    ] {
+        let mut a = vec!["progress", "set"];
+        a.extend_from_slice(args);
+        let (exit, v) = p.json(&a);
+        assert_eq!(
+            (exit, v["errors"][0]["code"].as_str()),
+            (1, Some(code)),
+            "{args:?}: {v}"
+        );
+        assert_eq!(p.text(), before, "{args:?}");
+    }
+    let (exit, v) = p.json(&["progress", "date", "2027-13-01"]);
+    assert_eq!(
+        (exit, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-04"))
+    );
+    assert_eq!(p.text(), before);
+
+    // Progress recorded after the status date is L-BAS-04.
+    let (_, _) = p.json(&["progress", "set", "platform-cicd", "--start", "2027-03-10"]);
+    let (_, v) = p.json(&["check"]);
+    let bas04 = v["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == "L-BAS-04")
+        .cloned()
+        .unwrap_or_else(|| panic!("no L-BAS-04: {v}"));
+    assert_eq!(bas04["ids"][0], "platform-cicd");
+
+    // Clearing removes every progress key of the task.
+    let (code, v) = p.json(&["progress", "set", "platform-cicd", "--clear"]);
+    assert_eq!(code, 0, "{v}");
+    let (code, v) = p.json(&["progress", "set", "platform-env", "--clear"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(!p.text().contains("remaining ="));
 }

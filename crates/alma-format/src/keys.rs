@@ -42,7 +42,7 @@ pub const KEYS: &[KeyDef] = keys! {
     ],
     "project" => [
         "format": A, "name": A, "start": A, "calendar": A, "deadline": A, "currency": A,
-        "description": B, "status_date": R("M4"), "estimate_class": R("M2"), "fx": R("M2"),
+        "description": B, "status_date": A, "estimate_class": R("M2"), "fx": R("M2"),
     ],
     "settings" => ["schedule": A, "cost": R("M2")],
     "settings.schedule" => [
@@ -50,7 +50,7 @@ pub const KEYS: &[KeyDef] = keys! {
         "critical_threshold": A, "near_critical": A, "lag_calendar": A, "phase": A,
         "reporting_period": B, "rolling_wave_horizon": B, "three_point": A,
         "leveling": A, "resource_calendars": A,
-        "progress_logic": R("M4"), "agile_drives": R("M4"), "control_threshold": R("M4"),
+        "progress_logic": A, "agile_drives": R("M4"), "control_threshold": R("M4"),
     ],
     "rules" => ["severity": A, "params": A],
     "reserve" => [
@@ -76,7 +76,7 @@ pub const KEYS: &[KeyDef] = keys! {
         "assumptions": B, "references": B, "sched_type": A, "duration": A, "effort": A,
         "estimate": A, "calendar": A, "constraint": A, "deadline": A, "spans": A, "reserve": A,
         "deps": A, "assign": A, "fixed_cost": A, "allow": A, "tags": B, "custom": B,
-        "actual_start": R("M4"), "actual_finish": R("M4"), "remaining": R("M4"),
+        "actual_start": A, "actual_finish": A, "remaining": A,
         "physical_pct": R("M4"), "progress_rule": R("M4"), "ev_method": R("M4"),
         "points": R("M4"), "iteration": R("M4"), "crash": R("M3"), "overlap": R("M3"),
         "risk_ref": R("M2"), "payment": R("M2"), "payment_ref": R("M2"),

@@ -19,6 +19,7 @@ fn plan(tasks: Vec<Task>) -> Plan {
             deadline: None,
             currency: None,
             description: None,
+            status_date: None,
         },
         settings: ScheduleSettings::default(),
         rules: RuleConfig::default(),
