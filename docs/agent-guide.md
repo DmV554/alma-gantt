@@ -17,7 +17,7 @@ claude mcp add alma -- alma --file /path/plan.alma.toml mcp
 
 Tools mirror the commands below: `check`, `list_tasks`, `show_task`, `critical_path`,
 `explain`, `list_resources`, `resource_usage`, `cost`, `scurve`, `baseline_list`, `variance`,
-`baseline_save`, `diff`, `keys`, `render` (returns a chart as an image: the Gantt chart,
+`baseline_save`, `risk_list`, `diff`, `keys`, `render` (returns a chart as an image: the Gantt chart,
 `chart: "histogram"` with a `resource`, or `chart: "scurve"`), `export`, `init`, `apply`, and
 one tool per operation (`task_add`, `dep_add`, `level`, `settings_set`, `reserve_add`, …, same
 fields as `alma schema`). Every tool takes an optional `file`; mutations take `dry_run`.
@@ -90,8 +90,14 @@ alma explain <id>                        # names the resource a leveled task wai
 alma res ls                              # resources, booked hours, over-allocations
 alma res usage <id> [--period day|week|month]   # demand vs capacity per period
 alma cost [--by wbs|resource|category] [--depth 2]   # what the plan costs, and where
-alma reserve add <id> --amount 300 [--kind contingency|management] [--scope task] [--basis "..."]
+alma reserve add <id> --amount 300 [--kind contingency|management] [--scope task]
+               [--risks r1,r2] [--basis "..."]
 alma reserve rm <id>
+alma risk add <id> --name "..." --probability 0.3 [--impact 200] [--impact-time 10d]
+               [--sign opportunity] [--affects task] [--correlation-group supplier]
+alma risk set <id> --field status=closed | rm <id> | ls   # ls: EMV and reserve coverage
+alma funding add <id> --date 2027-01-01 --amount 2000 [--source "Client advance"]
+alma funding rm <id>
 alma scurve [--period month] [--csv] [--baseline b1]   # forecast and planned value per period
 alma baseline save <id> [--name "..."] [--change CR-12] [--reason "..."] [--date 2027-01-04]
 alma baseline ls
@@ -114,7 +120,10 @@ alma guide
 - Reserves: contingency (identified risks) is part of the cost baseline and accrues at the
   finish of its scope; management reserve (the unforeseen) is outside it, in the budget only.
   `alma cost` shows the stack: work + contingency = cost baseline; + management = budget.
-  Give every contingency a `--basis`. Time reserves are buffer tasks (`--kind buffer`).
+  Size contingency from risks: `risk add` each one, then `reserve add --risks ...`; it should
+  match their EMV (probability × impact; `alma risk ls`). Time reserves are buffer tasks.
+- Funding: `funding add` each tranche. If spend runs ahead of funding (`L-COST-04`), delay
+  flexible work with `--constraint SNET:<date>` or add a tranche.
 - Ids: lowercase letters, digits and hyphens, unique across the whole plan.
 - `kind`: `task` (default), `milestone`, `loe` (level of effort), `buffer` (time reserve).
   A task with children is a summary; do not give it a `kind`.

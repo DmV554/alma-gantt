@@ -54,6 +54,8 @@ fn plan(tasks: Vec<Task>, resources: Vec<Resource>) -> Plan {
         tasks,
         baselines: Vec::new(),
         reserves: Vec::new(),
+        risks: Vec::new(),
+        funding: Vec::new(),
     }
 }
 
@@ -280,6 +282,7 @@ fn f_cost_09_10_reserves_and_the_cost_stack() {
         amount: dec(amount),
         scope: scope.map(str::to_string),
         basis: Some("EMV".into()),
+        risks: Vec::new(),
     };
     p.reserves = vec![
         reserve("c-a", ReserveKind::Contingency, "10", Some("a")),
@@ -311,6 +314,116 @@ fn f_cost_09_10_reserves_and_the_cost_stack() {
         .map(|d| d.ids[0].clone())
         .collect();
     assert_eq!(flagged, vec!["c-a"], "only contingency needs a basis");
+}
+
+fn risk(id: &str, p: &str, impact: &str, sign: RiskSign, group: Option<&str>) -> Risk {
+    Risk {
+        id: id.into(),
+        name: id.into(),
+        probability: dec(p),
+        impact: Some(dec(impact)),
+        impact_time: Some(Duration::working(10 * DAY)),
+        sign,
+        status: RiskStatus::Open,
+        owner: None,
+        affects: Vec::new(),
+        correlation_group: group.map(str::to_string),
+    }
+}
+
+/// F-COST-37: EMV = p × impact, negative for opportunities; contingency is checked against the
+/// EMV of the risks it covers (L-RISK-02), correlated risks are flagged (L-RISK-03), and a
+/// contingency whose risks are all closed should be released (L-RISK-05).
+#[test]
+fn f_cost_37_emv_and_risk_rules() {
+    use alma_sched::finance::{covered_emv, emv, emv_time};
+    let threat = risk("r1", "0.3", "200", RiskSign::Threat, Some("supplier"));
+    let opp = risk("r2", "0.5", "40", RiskSign::Opportunity, None);
+    assert_eq!(emv(&threat), dec("60"));
+    assert_eq!(emv(&opp), dec("-20"));
+    assert_eq!(emv_time(&threat), 3 * DAY);
+    let mut p = plan(
+        vec![task("a", 5, &[], &[])],
+        vec![resource(
+            "dev",
+            Some(("8", RatePer::Day)),
+            ResourceKind::Work,
+        )],
+    );
+    p.risks = vec![
+        threat,
+        risk("r3", "0.2", "150", RiskSign::Threat, Some("supplier")),
+        opp,
+    ];
+    assert_eq!(covered_emv(&p, &["r1".into(), "r3".into()]), dec("90"));
+    p.reserves = vec![CostReserve {
+        id: "c".into(),
+        kind: ReserveKind::Contingency,
+        amount: dec("95"),
+        scope: None,
+        basis: None,
+        risks: vec!["r1".into(), "r3".into()],
+    }];
+    let codes = |p: &Plan| -> Vec<&'static str> {
+        let s = schedule(p).unwrap();
+        lint(p, Some(&s))
+            .into_iter()
+            .map(|d| d.code)
+            .filter(|c| c.starts_with("L-RISK"))
+            .collect()
+    };
+    // 95 vs 90 is within 10%; linked risks count as a basis; the group is shared.
+    assert_eq!(codes(&p), vec!["L-RISK-03"]);
+    p.reserves[0].amount = dec("150");
+    assert_eq!(codes(&p), vec!["L-RISK-02", "L-RISK-03"]);
+    for r in &mut p.risks {
+        r.status = RiskStatus::Closed;
+    }
+    assert_eq!(codes(&p), vec!["L-RISK-05"]);
+}
+
+/// F-COST-11: cumulative spend must stay within cumulative funding (L-COST-04, a warning in
+/// draft plans and an error once preliminary or baselined).
+#[test]
+fn f_cost_11_funding_gap() {
+    use alma_sched::finance::funding_gap;
+    // 8 per working day for 10 days: 40 by Friday of week 1, 80 by Friday of week 2.
+    let mut p = plan(
+        vec![task("a", 10, &[], &[("dev", "1")])],
+        vec![resource(
+            "dev",
+            Some(("8", RatePer::Day)),
+            ResourceKind::Work,
+        )],
+    );
+    let fund = |id: &str, d: Date, amount: &str| Funding {
+        id: id.into(),
+        date: d,
+        amount: dec(amount),
+        source: None,
+    };
+    p.funding = vec![
+        fund("f1", Date::constant(2027, 1, 4), "40"),
+        fund("f2", Date::constant(2027, 1, 13), "40"),
+    ];
+    let s = schedule(&p).unwrap();
+    let g = funding_gap(&p, &costs(&p, &s)).unwrap();
+    assert_eq!(
+        (g.date, g.spend, g.funded),
+        (Date::constant(2027, 1, 11), dec("48"), dec("40"))
+    );
+    let sev = |p: &Plan| {
+        lint(p, Some(&schedule(p).unwrap()))
+            .into_iter()
+            .find(|d| d.code == "L-COST-04")
+            .map(|d| d.severity)
+    };
+    assert_eq!(sev(&p), Some(alma_core::diag::Severity::Warn));
+    p.settings.phase = Phase::Preliminary;
+    assert_eq!(sev(&p), Some(alma_core::diag::Severity::Error));
+    p.funding[1].date = Date::constant(2027, 1, 11);
+    assert_eq!(funding_gap(&p, &costs(&p, &s)), None);
+    assert_eq!(sev(&p), None);
 }
 
 fn arb_plan() -> impl Strategy<Value = Plan> {

@@ -986,3 +986,116 @@ fn histogram_and_s_curve_charts() {
             .contains("planned value (b1)")
     );
 }
+
+#[test]
+fn risks_and_funding() {
+    let p = Plan::new("risk");
+    let (code, v) = p.json(&[
+        "risk",
+        "add",
+        "ocr-late",
+        "--name",
+        "OCR portals arrive late",
+        "--probability",
+        "0.3",
+        "--impact",
+        "200",
+        "--impact-time",
+        "10d",
+        "--affects",
+        "gate-ocr",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let (code, v) = p.json(&[
+        "risk",
+        "add",
+        "bad",
+        "--name",
+        "Bad",
+        "--probability",
+        "high",
+    ]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-04"))
+    );
+    let (code, v) = p.json(&[
+        "risk",
+        "add",
+        "bad",
+        "--name",
+        "Bad",
+        "--probability",
+        "1.5",
+    ]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-FMT-03"))
+    );
+    let (code, v) = p.json(&[
+        "reserve", "add", "c", "--amount", "60", "--risks", "ocr-late",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert!(
+        v["new_diagnostics"].as_array().unwrap().is_empty(),
+        "60 = 0.3 x 200: {v}"
+    );
+    let (_, v) = p.json(&["risk", "ls"]);
+    assert_eq!(
+        (v["total_emv"].as_f64(), v["risks"][0]["emv_days"].as_f64()),
+        (Some(60.0), Some(3.0))
+    );
+    assert_eq!(v["coverage"][0]["emv"], 60.0);
+    // A covered risk cannot be removed; it can be closed.
+    let (code, v) = p.json(&["risk", "rm", "ocr-late"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-03"))
+    );
+    let (code, v) = p.json(&["risk", "set", "ocr-late", "--field", "status=closed"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["new_diagnostics"][0]["code"], "L-RISK-05");
+    let (code, v) = p.json(&["risk", "set", "ocr-late", "--field", "colour=red"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-FMT-02"))
+    );
+
+    // Funding: short in March, enough after a second tranche dated before the gap.
+    let (code, v) = p.json(&[
+        "funding",
+        "add",
+        "f1",
+        "--date",
+        "2027-01-01",
+        "--amount",
+        "2000",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["new_diagnostics"][0]["code"], "L-COST-04");
+    let (_, v) = p.json(&["cost"]);
+    assert_eq!(v["funding"]["short_on"], "2027-03-22");
+    let (_, v) = p.json(&["scurve"]);
+    assert_eq!(v["points"][0]["funded"], 2000.0);
+    let (code, _) = p.json(&[
+        "funding",
+        "add",
+        "f2",
+        "--date",
+        "2027-03-01",
+        "--amount",
+        "3000",
+    ]);
+    assert_eq!(code, 0);
+    let (_, v) = p.json(&["cost"]);
+    assert!(v["funding"].get("short_on").is_none(), "{v}");
+    let (code, _) = p.json(&["funding", "rm", "f2"]);
+    assert_eq!(code, 0);
+    let (code, v) = p.json(&["funding", "rm", "f2"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-02"))
+    );
+    let (code, _) = p.json(&["fmt", "--check"]);
+    assert_eq!(code, 0);
+}

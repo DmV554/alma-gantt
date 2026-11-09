@@ -262,7 +262,7 @@ Generated iteration ids join the global id namespace. Per-iteration overrides, `
 capacity and velocity are reserved (R, M4).
 
 ### 6.8 Other reserved top-level items (R)
-`[[release]]` (M4), `[[risk]]` (M2), `[[funding]]` (M2), `[[contract]]` (M3),
+`[[release]]` (M4), `[[contract]]` (M3),
 `[[scenario]]` (M2), `[[cashflow_item]]` (M2), `[ucp]` (later).
 
 ### 6.9 `[[baseline]]` (tier A)
@@ -293,9 +293,36 @@ buffer tasks (D7).
 | `kind` | `contingency \| management` | `contingency` | |
 | `amount` | money string | required | |
 | `scope` | task id | the project | What it covers; contingency accrues at its finish |
-| `basis` | string | none | How the amount was sized. Contingency without one is `L-RISK-01` |
+| `basis` | string | none | How the amount was sized. Contingency with neither a basis nor `risks` is `L-RISK-01` |
+| `risks` | array of risk ids | `[]` | Risks it covers; contingency is compared with their EMV (`L-RISK-02`) |
 
-Reserved (R, M2): `risks` (links to `[[risk]]`).
+### 6.11 `[[risk]]` (tier A)
+An identified risk (ADR 0015). EMV = probability × impact (F-COST-37), negative for an
+opportunity; the EMV of open risks is the basis for contingency.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `id` | id | required | Joins the global id namespace |
+| `name` | string | id | |
+| `probability` | number | required | Between 0 and 1 |
+| `impact` | money string | none | Cost if it occurs |
+| `impact_time` | duration | none | Delay if it occurs |
+| `sign` | `threat \| opportunity` | `threat` | |
+| `status` | `open \| closed` | `open` | Closed risks leave the EMV; a contingency whose risks are all closed is `L-RISK-05` |
+| `owner` | string | none | |
+| `affects` | array of task ids | `[]` | |
+| `correlation_group` | string | none | Risks with a common cause; summing them in one reserve is `L-RISK-03` |
+
+### 6.12 `[[funding]]` (tier A)
+Money available from a date (ADR 0015). Cumulative planned spend above cumulative funding on
+any day is `L-COST-04` (a warning while `phase = "draft"`, an error after).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `id` | id | required | Joins the global id namespace |
+| `date` | date | required | Day the money is available |
+| `amount` | money string | required | |
+| `source` | string | none | Client advance, loan, grant… |
 
 ---
 

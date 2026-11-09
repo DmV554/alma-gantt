@@ -144,12 +144,22 @@ fn display(
                 name: "forecast".into(),
                 values: r.points.iter().map(|p| p.cumulative).collect(),
                 main: true,
+                step: false,
             }];
+            if r.points.iter().any(|p| p.funded.is_some()) {
+                series.push(alma_layout::charts::Series {
+                    name: "funded".into(),
+                    values: r.points.iter().map(|p| p.funded.unwrap_or(0.0)).collect(),
+                    main: false,
+                    step: true,
+                });
+            }
             if let Some(b) = &r.baseline {
                 series.push(alma_layout::charts::Series {
                     name: format!("planned value ({b})"),
                     values: r.points.iter().map(|p| p.pv.unwrap_or(0.0)).collect(),
                     main: false,
+                    step: false,
                 });
             }
             let data = alma_layout::charts::CurveData {

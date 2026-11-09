@@ -9,14 +9,14 @@ use std::collections::HashSet;
 use alma_core::diag::{Diagnostic, Severity};
 use alma_core::model::{
     Approach, ConstraintKind, DepNature, DepScope, DepType, Leveling, MilestoneClass, ParamValue,
-    Phase, Plan, ReportingPeriod, ReserveKind, SchedType, TaskKind, WbsRole,
+    Phase, Plan, ReportingPeriod, ReserveKind, RiskStatus, SchedType, TaskKind, WbsRole,
 };
 use alma_core::time::{finish_date, format_instant, start_date};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
 use crate::cpm::{Calendars, PlanIndex, Schedule, resolve_duration};
-use crate::resources;
+use crate::{finance, resources};
 
 /// A lint rule.
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +52,11 @@ pub const RULES: &[Rule] = &[
         "L-COST-02",
         Some(E),
         "Control account with no work packages",
+    ),
+    rule(
+        "L-COST-04",
+        Some(E),
+        "Cumulative spend exceeds cumulative funding (warn while draft)",
     ),
     rule(
         "L-DEP-01",
@@ -118,7 +123,26 @@ pub const RULES: &[Rule] = &[
         Some(W),
         "Resource with assignments but no rate (its cost counts as zero)",
     ),
-    rule("L-RISK-01", Some(W), "Contingency reserve without a basis"),
+    rule(
+        "L-RISK-01",
+        Some(W),
+        "Contingency reserve without a basis or linked risks",
+    ),
+    rule(
+        "L-RISK-02",
+        Some(I),
+        "Contingency differs from the EMV of its risks by more than emv_tolerance",
+    ),
+    rule(
+        "L-RISK-03",
+        Some(I),
+        "Correlated risks covered by one reserve as if independent",
+    ),
+    rule(
+        "L-RISK-05",
+        Some(I),
+        "Contingency held for risks that are all closed",
+    ),
     rule(
         "L-SCH-01",
         Some(E),
@@ -780,16 +804,90 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
         }
     }
 
-    // Reserves (knowledge notes, resources §4.1).
+    // Reserves and risks (knowledge notes, resources §4.1, §7.1; F-COST-37).
+    let tolerance = match plan.rules.params.get("emv_tolerance") {
+        Some(ParamValue::Number(n)) => *n,
+        _ => Decimal::from(10),
+    };
+    for r in plan
+        .reserves
+        .iter()
+        .filter(|r| r.kind == ReserveKind::Contingency)
+    {
+        if r.risks.is_empty() {
+            continue;
+        }
+        let linked: Vec<&alma_core::model::Risk> = plan
+            .risks
+            .iter()
+            .filter(|k| r.risks.contains(&k.id))
+            .collect();
+        if !linked.is_empty() && linked.iter().all(|k| k.status == RiskStatus::Closed) {
+            l.report(
+                usize::MAX,
+                "L-RISK-05",
+                I,
+                format!(
+                    "contingency `{}` still holds {} for risks that are all closed; release it",
+                    r.id,
+                    r.amount.normalize()
+                ),
+                vec![r.id.clone()],
+            );
+            continue;
+        }
+        let emv = finance::covered_emv(plan, &r.risks);
+        let off = if emv.is_zero() {
+            !r.amount.is_zero()
+        } else {
+            ((r.amount - emv).abs() * Decimal::from(100) / emv.abs()) > tolerance
+        };
+        if off {
+            l.report(
+                usize::MAX,
+                "L-RISK-02",
+                I,
+                format!(
+                    "contingency `{}` is {} but the EMV of its open risks is {}",
+                    r.id,
+                    r.amount.normalize(),
+                    emv.round_dp(2).normalize()
+                ),
+                vec![r.id.clone()],
+            );
+        }
+        let mut groups: Vec<&str> = linked
+            .iter()
+            .filter_map(|k| k.correlation_group.as_deref())
+            .collect();
+        groups.sort_unstable();
+        let shared: Vec<&str> = groups
+            .windows(2)
+            .filter(|w| w[0] == w[1])
+            .map(|w| w[0])
+            .collect::<Vec<_>>();
+        if let Some(g) = shared.first() {
+            l.report(
+                usize::MAX,
+                "L-RISK-03",
+                I,
+                format!(
+                    "contingency `{}` covers several risks of correlation group `{g}`; they tend to happen together, so their sum understates the exposure",
+                    r.id
+                ),
+                vec![r.id.clone()],
+            );
+        }
+    }
     for r in &plan.reserves {
-        if r.kind == ReserveKind::Contingency && r.basis.is_none() {
+        if r.kind == ReserveKind::Contingency && r.basis.is_none() && r.risks.is_empty() {
             let before = l.out.len();
             l.report(
                 usize::MAX,
                 "L-RISK-01",
                 W,
                 format!(
-                    "contingency `{}` has no basis: a reserve nobody can justify reads as padding",
+                    "contingency `{}` has no basis and no linked risks: a reserve nobody can justify reads as padding",
                     r.id
                 ),
                 vec![r.id.clone()],
@@ -798,7 +896,7 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                 && let Some((_, d)) = l.out.last_mut()
             {
                 *d = d.clone().with_hint(
-                    "say how it was sized: `--basis \"EMV of risks R-03, R-07\"` or a percentage and why",
+                    "link the risks it covers (`--risks r1,r2`) or say how it was sized (`--basis \"10% of work, per policy\"`)",
                 );
             }
         }
@@ -845,6 +943,45 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                     "fixed cost of `{}` has no category, so cost and cash-flow reports cannot group it",
                     t.id
                 ),
+            );
+        }
+    }
+
+    // Funding (F-COST-11).
+    if let Some(s) = schedule
+        && let Some(g) = finance::funding_gap(plan, &crate::cost::costs(plan, s))
+    {
+        let sev = if plan.settings.phase == Phase::Draft {
+            W
+        } else {
+            E
+        };
+        let before = l.out.len();
+        // The entries available by then: adding later funding does not change the finding.
+        let ids: Vec<String> = plan
+            .funding
+            .iter()
+            .filter(|f| f.date <= g.date)
+            .map(|f| f.id.clone())
+            .collect();
+        l.report(
+            usize::MAX,
+            "L-COST-04",
+            sev,
+            format!(
+                "by {} the plan has spent {} but only {} is funded (short by {})",
+                g.date,
+                g.spend.round_dp(2).normalize(),
+                g.funded.round_dp(2).normalize(),
+                (g.spend - g.funded).round_dp(2).normalize()
+            ),
+            ids,
+        );
+        if l.out.len() > before
+            && let Some((_, d)) = l.out.last_mut()
+        {
+            *d = d.clone().with_hint(
+                "delay flexible work with a start-no-earlier-than constraint (`alma task set ID --constraint SNET:DATE`), or add funding (`alma funding add`)",
             );
         }
     }

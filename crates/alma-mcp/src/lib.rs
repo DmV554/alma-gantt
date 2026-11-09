@@ -189,6 +189,15 @@ fn op_description(op: &str) -> &'static str {
             "Add a cost reserve: kind `contingency` (identified risks; inside the cost baseline, accrues at the finish of its scope) or `management` (the unforeseen; outside the baseline, inside the budget). Give a `basis`."
         }
         "reserve.rm" => "Remove a cost reserve.",
+        "risk.add" => {
+            "Add an identified risk: probability (0-1), cost impact and/or time impact (e.g. 10d), threat or opportunity. EMV = probability × impact sizes contingency; link risks to a reserve with `risks`."
+        }
+        "risk.set" => "Set or unset fields of a risk (status = closed when it no longer applies).",
+        "risk.rm" => "Remove a risk; refused while a reserve covers it.",
+        "funding.add" => {
+            "Add funding available from a date. Cumulative spend above cumulative funding is L-COST-04."
+        }
+        "funding.rm" => "Remove a funding entry.",
         "level" => {
             "Resolve resource over-allocation: mode `leveling` delays tasks until their resources fit (the finish may move), `smoothing` only within free float, `off` turns it off. Saved in the plan; the result lists delayed tasks and what each waits for."
         }
@@ -288,6 +297,11 @@ pub fn tools() -> Vec<Tool> {
                 }),
                 &[],
             ),
+        )),
+        read_only(Tool::new(
+            "risk_list",
+            "Risks with their EMV (probability × impact), total EMV of open risks, contingency coverage per reserve and uncovered risks.",
+            schema(json!({}), &[]),
         )),
         read_only(Tool::new(
             "baseline_list",
@@ -648,6 +662,13 @@ impl AlmaServer {
                 )
                 .map_err(|m| Outcome::error("E-CLI-01", m))?;
                 Outcome::from(&r, false)
+            }
+            "risk_list" => {
+                let (_, l) = self.load(args)?;
+                let Some(plan) = l.plan.as_ref() else {
+                    return Err(Outcome::error("E-OPS-04", "the plan file has errors"));
+                };
+                Outcome::from(&alma_ops::finance::risks(plan), false)
             }
             "baseline_list" => {
                 let (path, l) = self.load(args)?;

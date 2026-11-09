@@ -26,6 +26,8 @@ fn plan(tasks: Vec<Task>) -> Plan {
         tasks,
         baselines: Vec::new(),
         reserves: Vec::new(),
+        risks: Vec::new(),
+        funding: Vec::new(),
     }
 }
 
@@ -350,4 +352,12 @@ fn budget_5000_tasks_under_50ms() {
     if !cfg!(debug_assertions) {
         assert!(elapsed.as_millis() < 50, "took {elapsed:?}");
     }
+}
+
+#[test]
+fn rules_are_listed_in_code_order() {
+    let codes: Vec<&str> = alma_sched::RULES.iter().map(|r| r.code).collect();
+    let mut sorted = codes.clone();
+    sorted.sort();
+    assert_eq!(codes, sorted);
 }

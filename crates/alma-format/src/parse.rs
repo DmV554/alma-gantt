@@ -430,7 +430,9 @@ fn read_plan(cx: &mut Cx, root: &toml_edit::Table) -> Option<Plan> {
     let resources = read_list(cx, root, "resource", units, read_resource);
     let cadences = read_list(cx, root, "cadence", units, read_cadence);
     let tasks = read_list(cx, root, "task", units, read_task);
+    let risks = read_list(cx, root, "risk", units, read_risk);
     let reserves = read_list(cx, root, "reserve", units, read_reserve);
+    let funding = read_list(cx, root, "funding", units, read_funding);
     let baselines = read_list(cx, root, "baseline", units, read_baseline);
 
     let plan = Plan {
@@ -443,6 +445,8 @@ fn read_plan(cx: &mut Cx, root: &toml_edit::Table) -> Option<Plan> {
         tasks,
         baselines,
         reserves,
+        risks,
+        funding,
     };
     validate(cx, &plan, root);
     Some(plan)
@@ -843,6 +847,66 @@ fn read_reserve(cx: &mut Cx, f: &Fields<'_>) -> Option<CostReserve> {
         amount,
         scope: f.str(cx, "scope"),
         basis: f.str(cx, "basis"),
+        risks: f.strings(cx, "risks"),
+        id,
+    })
+}
+
+fn read_risk(cx: &mut Cx, f: &Fields<'_>) -> Option<Risk> {
+    let id = f.required_str(cx, "id")?;
+    let probability = f.number(cx, "probability");
+    let Some(probability) = probability.filter(|p| *p >= Decimal::ZERO && *p <= Decimal::ONE)
+    else {
+        let at = f.span(cx, "probability").or_else(|| cx.at(f.at.clone()));
+        cx.err(
+            "E-FMT-03",
+            format!(
+                "{} needs a `probability` between 0 and 1, like 0.3",
+                f.owner
+            ),
+            at,
+        );
+        return None;
+    };
+    Some(Risk {
+        name: f.str(cx, "name").unwrap_or_else(|| id.clone()),
+        probability,
+        impact: f.money(cx, "impact"),
+        impact_time: f.duration(cx, "impact_time", false),
+        sign: f
+            .enumerated(cx, "sign", RiskSign::parse, RiskSign::VALUES)
+            .unwrap_or(RiskSign::Threat),
+        status: f
+            .enumerated(cx, "status", RiskStatus::parse, RiskStatus::VALUES)
+            .unwrap_or(RiskStatus::Open),
+        owner: f.str(cx, "owner"),
+        affects: f.strings(cx, "affects"),
+        correlation_group: f.str(cx, "correlation_group"),
+        id,
+    })
+}
+
+fn read_funding(cx: &mut Cx, f: &Fields<'_>) -> Option<Funding> {
+    let id = f.required_str(cx, "id")?;
+    let date = f.date(cx, "date");
+    let amount = if f.get("amount").is_some() {
+        f.money(cx, "amount")
+    } else {
+        None
+    };
+    let (Some(date), Some(amount)) = (date, amount) else {
+        let at = cx.at(f.at.clone());
+        cx.err(
+            "E-FMT-03",
+            format!("{} needs a `date` and an `amount` like \"1000\"", f.owner),
+            at,
+        );
+        return None;
+    };
+    Some(Funding {
+        date,
+        amount,
+        source: f.str(cx, "source"),
         id,
     })
 }
@@ -1081,6 +1145,12 @@ fn validate(cx: &mut Cx, plan: &Plan, root: &toml_edit::Table) {
     for r in &plan.reserves {
         ids.push((r.id.clone(), "reserve", None));
     }
+    for r in &plan.risks {
+        ids.push((r.id.clone(), "risk", None));
+    }
+    for r in &plan.funding {
+        ids.push((r.id.clone(), "funding", None));
+    }
     for (id, kind, span) in ids {
         if !is_valid_id(&id) {
             cx.err(
@@ -1145,11 +1215,24 @@ fn validate(cx: &mut Cx, plan: &Plan, root: &toml_edit::Table) {
             missing(cx, "calendar", cal, &c.id, None);
         }
     }
+    let risks: HashSet<&str> = plan.risks.iter().map(|r| r.id.as_str()).collect();
     for r in &plan.reserves {
         if let Some(scope) = &r.scope
             && !tasks.contains_key(scope.as_str())
         {
             missing(cx, "task", scope, &r.id, None);
+        }
+        for k in &r.risks {
+            if !risks.contains(k.as_str()) {
+                missing(cx, "risk", k, &r.id, None);
+            }
+        }
+    }
+    for r in &plan.risks {
+        for t in &r.affects {
+            if !tasks.contains_key(t.as_str()) {
+                missing(cx, "task", t, &r.id, None);
+            }
         }
     }
     let baselines: HashSet<&str> = plan.baselines.iter().map(|b| b.id.as_str()).collect();

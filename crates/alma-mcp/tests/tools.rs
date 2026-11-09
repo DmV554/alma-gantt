@@ -58,6 +58,9 @@ fn every_tool_has_a_standalone_object_schema() {
         "baseline_save",
         "baseline_list",
         "variance",
+        "risk_add",
+        "risk_list",
+        "funding_add",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
@@ -212,6 +215,19 @@ fn resources_and_leveling() {
     assert_eq!(r.json["total"], 0);
     let r = s.call("scurve", &args(json!({})));
     assert_eq!(r.json["baseline"], "b1");
+
+    let r = s.call(
+        "risk_add",
+        &args(json!({ "id": "r1", "name": "Late", "probability": "0.5", "impact": "100" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("risk_list", &args(json!({})));
+    assert_eq!(r.json["total_emv"], 50.0);
+    let r = s.call(
+        "funding_add",
+        &args(json!({ "id": "f1", "date": "2027-01-01", "amount": "100000" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
 }
 
 #[test]
