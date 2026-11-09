@@ -374,7 +374,7 @@ pub fn tools() -> Vec<Tool> {
         )),
         Tool::new(
             "export",
-            "Write a chart (.svg, .png: gantt, histogram or scurve) or the task table (.csv) to a file.",
+            "Write a chart (.svg, .png: gantt, histogram or scurve), the task table (.csv) or the cost workbook (.xlsx: cost per period by resource and category, tasks, resources, risks) to a file.",
             schema(
                 json!({
                     "out": { "type": "string" },
@@ -792,7 +792,20 @@ impl AlmaServer {
                     "svg" => alma_ops::export::svg(plan, s, &req).map(String::into_bytes),
                     "png" => alma_ops::export::png(plan, s, &req),
                     "csv" => Ok(alma_ops::export::csv(plan, s).into_bytes()),
-                    other => Err(format!("unknown format `{other}`; use .svg, .png or .csv")),
+                    "xlsx" => {
+                        alma_ops::baseline::snapshot_for(plan, &path, str_arg(args, "baseline"))
+                            .and_then(|snap| {
+                                alma_ops::export::xlsx(
+                                    plan,
+                                    s,
+                                    str_arg(args, "period").unwrap_or("month"),
+                                    snap.as_ref(),
+                                )
+                            })
+                    }
+                    other => Err(format!(
+                        "unknown format `{other}`; use .svg, .png, .csv or .xlsx"
+                    )),
                 }
                 .map_err(|m| Outcome::error("E-CLI-01", m))?;
                 alma_ops::files::write_bytes(&out, &bytes)

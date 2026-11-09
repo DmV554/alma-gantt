@@ -250,6 +250,266 @@ pub fn csv(plan: &Plan, schedule: &Schedule) -> String {
     out
 }
 
+/// The cost workbook (ADR 0016): cost per period by resource, fixed-cost category and
+/// contingency, with total and cumulative rows (plus planned value and funding when the plan
+/// has them); the task table; resources; risks.
+pub fn xlsx(
+    plan: &Plan,
+    schedule: &Schedule,
+    period: &str,
+    baseline: Option<&alma_core::model::Snapshot>,
+) -> Result<Vec<u8>, String> {
+    use alma_export::xlsx::{Cell, Sheet};
+    use alma_sched::cost::{Source, costs, share};
+    use rust_decimal::Decimal;
+
+    let curve = crate::cost::scurve(plan, schedule, period, baseline)?;
+    let p = alma_sched::resources::Period::parse(period)
+        .ok_or_else(|| format!("period `{period}` must be day, week or month"))?;
+    let c = costs(plan, schedule);
+    let cals = alma_sched::cpm::Calendars::new(plan);
+    let buckets: Vec<(Date, Date)> = curve
+        .points
+        .iter()
+        .map(|pt| {
+            let start: Date = pt.start.parse().unwrap_or_default();
+            (start, p.next(start))
+        })
+        .collect();
+    // Rows in a stable order: resources (plan order), fixed-cost categories (by name),
+    // contingency.
+    let mut keys: Vec<(String, String)> = Vec::new();
+    let key_of = |source: Source, category: &Option<String>| -> (String, String) {
+        match source {
+            Source::Resource(r) => (
+                plan.resources[r].id.clone(),
+                plan.resources[r].kind.as_str().to_string(),
+            ),
+            Source::Fixed => (
+                format!(
+                    "fixed: {}",
+                    category.clone().unwrap_or_else(|| "uncategorized".into())
+                ),
+                "fixed".into(),
+            ),
+            Source::Contingency(_) => ("contingency".into(), "reserve".into()),
+        }
+    };
+    for r in &plan.resources {
+        if c.lines
+            .iter()
+            .any(|l| matches!(l.source, Source::Resource(i) if plan.resources[i].id == r.id))
+        {
+            keys.push((r.id.clone(), r.kind.as_str().to_string()));
+        }
+    }
+    let mut fixed: Vec<(String, String)> = c
+        .lines
+        .iter()
+        .filter(|l| l.source == Source::Fixed)
+        .map(|l| key_of(l.source, &l.category))
+        .collect();
+    fixed.sort();
+    fixed.dedup();
+    keys.extend(fixed);
+    if c.contingency > Decimal::ZERO {
+        keys.push(("contingency".into(), "reserve".into()));
+    }
+    let mut table = vec![vec![Decimal::ZERO; buckets.len()]; keys.len()];
+    for l in &c.lines {
+        let k = key_of(l.source, &l.category);
+        let Some(row) = keys.iter().position(|x| *x == k) else {
+            continue;
+        };
+        for (i, (a, b)) in buckets.iter().enumerate() {
+            table[row][i] += share(
+                plan,
+                &cals,
+                l,
+                alma_core::time::start_of(*a),
+                alma_core::time::start_of(*b),
+            );
+        }
+    }
+    let label = |i: usize| curve.points[i].start.clone();
+    let mut header = vec!["Item".to_string(), "Kind".to_string()];
+    header.extend((0..buckets.len()).map(label));
+    header.push("Total".into());
+    let money = |d: Decimal| Cell::Money(crate::cost::money(d));
+    let mut rows: Vec<Vec<Cell>> = keys
+        .iter()
+        .zip(&table)
+        .map(|((name, kind), values)| {
+            let mut r = vec![Cell::Text(name.clone()), Cell::Text(kind.clone())];
+            r.extend(values.iter().map(|v| money(*v)));
+            r.push(money(values.iter().copied().sum()));
+            r
+        })
+        .collect();
+    let mut total = vec![Cell::Text("Total".into()), Cell::Empty];
+    total.extend(curve.points.iter().map(|pt| Cell::Money(pt.cost)));
+    total.push(Cell::Money(curve.total));
+    rows.push(total);
+    let mut cum = vec![Cell::Text("Cumulative".into()), Cell::Empty];
+    cum.extend(curve.points.iter().map(|pt| Cell::Money(pt.cumulative)));
+    rows.push(cum);
+    if let Some(b) = &curve.baseline {
+        let mut r = vec![
+            Cell::Text(format!("Planned value ({b}), cumulative")),
+            Cell::Empty,
+        ];
+        r.extend(
+            curve
+                .points
+                .iter()
+                .map(|pt| Cell::Money(pt.pv.unwrap_or(0.0))),
+        );
+        rows.push(r);
+    }
+    if curve.points.iter().any(|pt| pt.funded.is_some()) {
+        let mut r = vec![Cell::Text("Funded, cumulative".into()), Cell::Empty];
+        r.extend(
+            curve
+                .points
+                .iter()
+                .map(|pt| Cell::Money(pt.funded.unwrap_or(0.0))),
+        );
+        rows.push(r);
+    }
+    let currency = plan.project.currency.clone().unwrap_or_default();
+    let mut notes = vec![
+        format!("Project: {}", plan.project.name),
+        format!(
+            "Currency: {currency}. Cost per {period} of the current schedule (a forecast), contingency included; columns are the first day of each {period}."
+        ),
+    ];
+    if c.management > Decimal::ZERO {
+        notes.push(format!(
+            "Management reserve outside the cost baseline: {:.2}; project budget {:.2}.",
+            crate::cost::money(c.management),
+            curve.budget
+        ));
+    }
+    let per_period = Sheet {
+        name: "Cost per period".into(),
+        notes,
+        header,
+        rows,
+        bold_rows: vec!["Total".into(), "Cumulative".into()],
+    };
+
+    let views = task_views(plan, schedule);
+    let tasks = Sheet {
+        name: "Tasks".into(),
+        notes: Vec::new(),
+        header: [
+            "WBS",
+            "Id",
+            "Name",
+            "Kind",
+            "Start",
+            "Finish",
+            "Duration",
+            "Total float (d)",
+            "Critical",
+            "Cost",
+        ]
+        .map(String::from)
+        .to_vec(),
+        rows: views
+            .iter()
+            .map(|v| {
+                vec![
+                    Cell::Text(v.wbs.clone()),
+                    Cell::Text(v.id.clone()),
+                    Cell::Text(v.name.clone()),
+                    Cell::Text(v.kind.clone()),
+                    Cell::Date(v.start.clone()),
+                    Cell::Date(v.finish.clone()),
+                    Cell::Text(v.duration.clone()),
+                    v.tf.map_or(Cell::Empty, Cell::Number),
+                    Cell::Text(if v.critical { "yes" } else { "" }.into()),
+                    Cell::Money(v.cost),
+                ]
+            })
+            .collect(),
+        bold_rows: Vec::new(),
+    };
+    let res = crate::resources::list(plan, schedule);
+    let resources = Sheet {
+        name: "Resources".into(),
+        notes: Vec::new(),
+        header: [
+            "Id",
+            "Name",
+            "Kind",
+            "Rate",
+            "Max units",
+            "Work (h)",
+            "Cost",
+        ]
+        .map(String::from)
+        .to_vec(),
+        rows: res
+            .iter()
+            .zip(&c.by_resource)
+            .map(|(r, cost)| {
+                vec![
+                    Cell::Text(r.id.clone()),
+                    Cell::Text(r.name.clone()),
+                    Cell::Text(r.kind.clone()),
+                    Cell::Text(r.rate.clone().unwrap_or_default()),
+                    Cell::Number(r.max_units),
+                    Cell::Number(r.work_h),
+                    money(*cost),
+                ]
+            })
+            .collect(),
+        bold_rows: Vec::new(),
+    };
+    let mut sheets = vec![per_period, tasks, resources];
+    if !plan.risks.is_empty() {
+        let r = crate::finance::risks(plan);
+        sheets.push(Sheet {
+            name: "Risks".into(),
+            notes: vec![format!(
+                "EMV of open risks {:.2}; contingency {:.2}.",
+                r.total_emv, r.contingency
+            )],
+            header: [
+                "Id",
+                "Name",
+                "Status",
+                "Sign",
+                "Probability",
+                "Impact",
+                "EMV",
+                "Reserves",
+            ]
+            .map(String::from)
+            .to_vec(),
+            rows: r
+                .risks
+                .iter()
+                .map(|k| {
+                    vec![
+                        Cell::Text(k.id.clone()),
+                        Cell::Text(k.name.clone()),
+                        Cell::Text(k.status.clone()),
+                        Cell::Text(k.sign.clone()),
+                        Cell::Number(k.probability),
+                        k.impact.map_or(Cell::Empty, Cell::Money),
+                        Cell::Money(k.emv),
+                        Cell::Text(k.reserves.join(", ")),
+                    ]
+                })
+                .collect(),
+            bold_rows: Vec::new(),
+        });
+    }
+    alma_export::xlsx::to_xlsx(&plan.project.name, &sheets).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

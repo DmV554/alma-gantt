@@ -81,6 +81,7 @@ alma export gantt.png [--range 2027-01..2027-06] [--depth 2] [--scale week] [--d
 alma export gantt.svg | plan.csv | - --format csv
 alma export dev.png --chart histogram --resource dev [--period week]   # demand vs capacity
 alma export curve.png --chart scurve [--period month] [--baseline b1]  # forecast vs planned
+alma export costs.xlsx [--period month]  # workbook: cost per period, tasks, resources, risks
 
 alma check [--min warn] [--limit N --cursor C]
 alma ls [--parent P] [--critical] [--kind milestone] [--fields id,name,start,finish,tf]

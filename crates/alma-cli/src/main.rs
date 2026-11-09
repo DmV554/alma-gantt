@@ -117,14 +117,15 @@ enum Cmd {
         #[command(flatten)]
         m: MutArgs,
     },
-    /// Export a chart (.svg, .png) or the task table (.csv); `-` writes SVG or CSV to stdout.
+    /// Export a chart (.svg, .png), the task table (.csv) or the cost workbook (.xlsx: cost per
+    /// period, tasks, resources, risks); `-` writes SVG or CSV to stdout.
     /// Charts: the Gantt chart (default), a resource histogram, the S-curve. `render` is an
     /// alias.
     #[command(alias = "render")]
     Export {
         /// Output file; the extension picks the format unless --format is given.
         out: PathBuf,
-        /// svg, png or csv.
+        /// svg, png, csv or xlsx.
         #[arg(long)]
         format: Option<String>,
         /// gantt, histogram (needs --resource) or scurve.
@@ -133,7 +134,7 @@ enum Cmd {
         /// Resource id, for --chart histogram.
         #[arg(long)]
         resource: Option<String>,
-        /// day, week or month, for histogram (default week) and scurve (default month).
+        /// day, week or month, for histogram (default week), scurve and xlsx (default month).
         #[arg(long)]
         period: Option<String>,
         /// Baseline for the planned value line of the S-curve (default: the active one).
@@ -1621,17 +1622,17 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 return Ok(code);
             }
             let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
-            let baseline = if chart.as_deref() == Some("scurve") {
-                alma_ops::baseline::snapshot_for(plan, &path, baseline.as_deref()).map_err(Usage)?
-            } else {
-                None
-            };
             let format = format.unwrap_or_else(|| {
                 out.extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("svg")
                     .to_ascii_lowercase()
             });
+            let baseline = if chart.as_deref() == Some("scurve") || format == "xlsx" {
+                alma_ops::baseline::snapshot_for(plan, &path, baseline.as_deref()).map_err(Usage)?
+            } else {
+                None
+            };
             let req = alma_ops::export::RenderRequest {
                 range,
                 depth,
@@ -1650,13 +1651,20 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                     .into_bytes(),
                 "png" => alma_ops::export::png(plan, s, &req).map_err(Usage)?,
                 "csv" => alma_ops::export::csv(plan, s).into_bytes(),
+                "xlsx" => alma_ops::export::xlsx(
+                    plan,
+                    s,
+                    req.period.as_deref().unwrap_or("month"),
+                    req.baseline.as_ref(),
+                )
+                .map_err(Usage)?,
                 other => {
                     return Err(Usage(format!(
-                        "unknown format `{other}`; use svg, png or csv"
+                        "unknown format `{other}`; use svg, png, csv or xlsx"
                     )));
                 }
             };
-            let warnings = if format == "csv" {
+            let warnings = if format == "csv" || format == "xlsx" {
                 Vec::new()
             } else {
                 alma_ops::export::warnings(plan, s, &req).map_err(Usage)?
@@ -1667,10 +1675,11 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 }
             }
             if out.as_os_str() == "-" {
-                if format == "png" {
-                    return Err(Usage(
-                        "PNG cannot be written to stdout; give a file name".into(),
-                    ));
+                if format == "png" || format == "xlsx" {
+                    return Err(Usage(format!(
+                        "{} cannot be written to stdout; give a file name",
+                        format.to_uppercase()
+                    )));
                 }
                 print!("{}", String::from_utf8_lossy(&bytes));
                 return Ok(ExitCode::SUCCESS);

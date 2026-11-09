@@ -1099,3 +1099,20 @@ fn risks_and_funding() {
     let (code, _) = p.json(&["fmt", "--check"]);
     assert_eq!(code, 0);
 }
+
+#[test]
+fn cost_workbook_is_deterministic() {
+    let p = Plan::new("xlsx");
+    let a = p.dir.join("a.xlsx");
+    let b = p.dir.join("b.xlsx");
+    let (code, v) = p.json(&["export", a.to_str().unwrap()]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["format"], "xlsx");
+    p.json(&["export", b.to_str().unwrap()]);
+    let bytes = std::fs::read(&a).unwrap();
+    assert_eq!(&bytes[..2], b"PK");
+    assert_eq!(bytes, std::fs::read(&b).unwrap(), "same plan, same bytes");
+    let (code, v) = p.json(&["export", "-", "--format", "xlsx"]);
+    assert_eq!(code, 2);
+    assert!(v["errors"][0]["message"].as_str().unwrap().contains("XLSX"));
+}

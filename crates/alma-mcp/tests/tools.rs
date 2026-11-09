@@ -282,6 +282,9 @@ fn render_returns_an_image() {
     assert!(hist.png.is_some());
     let bad = s.call("render", &args(json!({ "chart": "histogram" })));
     assert!(bad.is_error);
+    let x = s.call("export", &args(json!({ "out": "costs.xlsx" })));
+    assert!(!x.is_error, "{}", x.json);
+    assert_eq!(x.json["format"], "xlsx");
     let svg = s.call("render", &args(json!({ "format": "svg" })));
     assert!(svg.json["svg"].as_str().unwrap().starts_with("<svg"));
 }

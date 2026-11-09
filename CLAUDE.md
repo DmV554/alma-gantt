@@ -20,7 +20,7 @@ tool, with agents doing most of the planning and humans able to edit anything by
   forecast S-curve (`alma cost`, `alma scurve`, `alma res set`, ADR 0012), baselines with
   planned value and variance (`alma baseline save|ls`, `alma variance`, ADR 0013), cost
   reserves and the cost stack (`alma reserve`, ADR 0014), risks with EMV and funding checked
-  against spend (`alma risk`, `alma funding`, ADR 0015).
+  against spend (`alma risk`, `alma funding`, ADR 0015), the XLSX cost workbook (ADR 0016).
 - Implemented: model and durations (`alma-core`), calendars, CPM and the M0 lint rules
   (`alma-sched`), the parser with the key registry (`alma-format`), queries and lossless
   mutations (`alma-ops`), and the CLI with the agent contract (`alma-cli`). The fixture schedules
@@ -32,8 +32,8 @@ tool, with agents doing most of the planning and humans able to edit anything by
   built the hybrid plan from a written brief using only `alma guide`, replayed in CI.
 - Charts: the resource histogram and the S-curve render through the same display list as the
   Gantt chart (`alma export --chart histogram|scurve`, MCP `render`).
-- Known gaps, by design until later milestones: XLSX export and resource calendars combined
-  with task calendars (rest of M2); progress, earned value and linking tasks to sprints (M4);
+- Known gaps, by design until later milestones: resource calendars combined with task
+  calendars (rest of M2); progress, earned value and linking tasks to sprints (M4);
   text widths are estimated (ADR 0009).
 - `docs/format.md` is the normative reference for plan files (ADRs 0005–0008). Read it before
   touching `alma-format` or the model.
@@ -47,7 +47,7 @@ tool, with agents doing most of the planning and humans able to edit anything by
 | Path | What it is |
 |---|---|
 | `SPEC.md` | Product and technical spec. The source of truth |
-| `docs/adr/` | Architecture decisions (0001–0015 accepted). Template: `0000-template.md` |
+| `docs/adr/` | Architecture decisions (0001–0016 accepted). Template: `0000-template.md` |
 | `docs/format.md` | Normative reference of the plan file format |
 | `docs/knowledge/` | Project-management reference notes from PMBOK 6, the WBS standard, the Agile Practice Guide and estimation sources. Each concept maps to model fields, engine behavior, lint rules (Annex A) and formulas (Annex B) |
 | `crates/alma-core` | Domain model: no I/O, no UI |

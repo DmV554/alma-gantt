@@ -12,4 +12,5 @@ workspace = true
 [dependencies]
 alma-layout.workspace = true
 resvg.workspace = true
+rust_xlsxwriter.workspace = true
 thiserror.workspace = true
