@@ -54,6 +54,10 @@ fields as `alma schema`). Every tool takes an optional `file`; mutations take `d
    (`--pct 40`) and what was spent (`--cost 1200`, on tasks or on control accounts). Then run
    `alma evm`. It reports PV, EV, AC, SPI, CPI, EAC and TCPI for the project and per WBS node,
    and `alma check` warns when a variance crosses the control thresholds (`L-EVM-01`).
+10. When an approved change alters the plan after work has started, use `alma baseline revise
+   b2 --change CR-…`, not `save`. It keeps the planned value already reported and takes the
+   current plan from the status date on. A `save` after progress rewrites the past
+   (`L-BAS-06`).
 
 For many changes at once, write the operations to a file and run `alma apply ops.json`
 (all or nothing). `alma schema` prints the JSON Schema of operations.
@@ -111,6 +115,7 @@ alma funding add <id> --date 2027-01-01 --amount 2000 [--source "Client advance"
 alma funding rm <id>
 alma scurve [--period month] [--csv] [--baseline b1]   # forecast and planned value per period
 alma baseline save <id> [--name "..."] [--change CR-12] [--reason "..."] [--date 2027-01-04]
+alma baseline revise <id> --change CR-12 [--reason "..."] [--approved-by "..."] [--from b1]
 alma baseline ls
 alma variance [--baseline b1] [--changed] [--limit N]   # dates and cost vs the baseline
 alma progress date 2027-03-31            # the status date: progress is measured through it

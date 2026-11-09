@@ -22,9 +22,11 @@ tool, with agents doing most of the planning and humans able to edit anything by
     `L-BAS-01/02/04`, and `alma progress date|set|ls`;
   - earned value (ADR 0019): `physical_pct`, `ev_method`, `actual_cost`, snapshot format 1
     with per-task budgets and PV, `alma evm`, baseline-aware lint (`L-BAS-03`,
-    `L-EVM-01..05`), `L-EVM-08`, and `alma rule param`.
+    `L-EVM-01..05`), `L-EVM-08`, and `alma rule param`;
+  - baseline revisions that keep past planned value (ADR 0020): `alma baseline revise`,
+    `L-BAS-06`, `L-BAS-09`.
 
-  Next: `alma baseline revise`, then iterations and burndown.
+  Next: iterations and burndown.
 - M2: resource usage and over-allocation (`L-RES-01/02`, `alma res ls|usage`), leveling
   and smoothing as a schedule setting (`alma level`, ADR 0011), `settings.set`, costs and the
   forecast S-curve (`alma cost`, `alma scurve`, `alma res set`, ADR 0012), baselines with
@@ -43,8 +45,8 @@ tool, with agents doing most of the planning and humans able to edit anything by
   built the hybrid plan from a written brief using only `alma guide`, replayed in CI.
 - Charts: the resource histogram and the S-curve render through the same display list as the
   Gantt chart (`alma export --chart histogram|scurve`, MCP `render`).
-- Known gaps, by design until later milestones: baseline revisions and linking tasks to sprints
-  (rest of M4); print and interop (M3); text widths are estimated (ADR 0009).
+- Known gaps, by design until later milestones: linking tasks to sprints, burndown and the web
+  build (rest of M4); print and interop (M3); text widths are estimated (ADR 0009).
 - `docs/format.md` is the normative reference for plan files (ADRs 0005–0008). Read it before
   touching `alma-format` or the model.
 - `examples/hybrid-terminal.alma.toml` is the **target fixture** for M0; making it parse,
@@ -57,7 +59,7 @@ tool, with agents doing most of the planning and humans able to edit anything by
 | Path | What it is |
 |---|---|
 | `SPEC.md` | Product and technical spec. The source of truth |
-| `docs/adr/` | Architecture decisions (0001–0019 accepted). Template: `0000-template.md` |
+| `docs/adr/` | Architecture decisions (0001–0020 accepted). Template: `0000-template.md` |
 | `docs/format.md` | Normative reference of the plan file format |
 | `docs/knowledge/` | Project-management reference notes from PMBOK 6, the WBS standard, the Agile Practice Guide and estimation sources. Each concept maps to model fields, engine behavior, lint rules (Annex A) and formulas (Annex B) |
 | `crates/alma-core` | Domain model: no I/O, no UI |

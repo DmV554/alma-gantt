@@ -63,6 +63,9 @@ pub fn to_text(s: &Snapshot) -> String {
     doc.insert("start", value(format_instant(s.start)));
     doc.insert("finish", value(format_instant(s.finish)));
     doc.insert("bac", value(s.bac.normalize().to_string()));
+    if let Some(at) = s.revised_at {
+        doc.insert("revised_at", value(at.to_string()));
+    }
     doc.insert("pv", value(curve(&s.pv, "  ")));
     let mut tasks = ArrayOfTables::new();
     for t in &s.tasks {
@@ -147,6 +150,14 @@ pub fn from_text(text: &str) -> Result<Snapshot, String> {
         tasks,
         pv,
         per_task: format == Some(1),
+        revised_at: match root.get("revised_at") {
+            Some(_) => Some(
+                str_of(root, "revised_at")?
+                    .parse()
+                    .map_err(|_| "`revised_at` is not a date".to_string())?,
+            ),
+            None => None,
+        },
     })
 }
 
@@ -188,6 +199,7 @@ mod tests {
                 (d(1, 5), Decimal::from_str("3").unwrap()),
             ],
             per_task: true,
+            revised_at: Some(d(1, 6)),
         };
         let text = to_text(&s);
         assert!(

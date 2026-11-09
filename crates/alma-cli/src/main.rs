@@ -552,29 +552,44 @@ enum FundingCmd {
     },
 }
 
+#[derive(Args)]
+struct BaselineArgs {
+    /// Baseline id, e.g. b1 or contract.
+    id: String,
+    /// Name.
+    #[arg(long)]
+    name: Option<String>,
+    /// Change request that approved it (expected when it revises another baseline).
+    #[arg(long = "change")]
+    change_ref: Option<String>,
+    /// Why it is saved or revised.
+    #[arg(long)]
+    reason: Option<String>,
+    /// Who approved it.
+    #[arg(long)]
+    approved_by: Option<String>,
+    /// Day it is saved (default: today).
+    #[arg(long)]
+    date: Option<String>,
+    #[command(flatten)]
+    m: MutArgs,
+}
+
 #[derive(Subcommand)]
 enum BaselineCmd {
     /// Freeze the current schedule as a new active baseline. Never overwrites one.
     Save {
-        /// Baseline id, e.g. b1 or contract.
-        id: String,
-        /// Name.
-        #[arg(long)]
-        name: Option<String>,
-        /// Change request that approved it (expected when it revises another baseline).
-        #[arg(long = "change")]
-        change_ref: Option<String>,
-        /// Why it is saved or revised.
-        #[arg(long)]
-        reason: Option<String>,
-        /// Who approved it.
-        #[arg(long)]
-        approved_by: Option<String>,
-        /// Day it is saved (default: today).
-        #[arg(long)]
-        date: Option<String>,
         #[command(flatten)]
-        m: MutArgs,
+        b: BaselineArgs,
+    },
+    /// Revise the active baseline after progress: planned value up to the status date stays as
+    /// it was, the work after it follows the current plan. Give the change request.
+    Revise {
+        #[command(flatten)]
+        b: BaselineArgs,
+        /// Baseline to revise (default: the active one).
+        #[arg(long)]
+        from: Option<String>,
     },
     /// List baselines with the finish and budget each one promised.
     Ls,
@@ -1461,26 +1476,31 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             };
             mutation(file, &[op], m.dry_run, json)
         }
-        Cmd::Baseline(BaselineCmd::Save {
-            id,
-            name,
-            change_ref,
-            reason,
-            approved_by,
-            date,
-            m,
-        }) => {
-            let path = resolve_file(file)?;
-            let meta = mutate::BaselineMeta {
-                id,
-                name,
-                date: date.unwrap_or_else(|| alma_ops::files::today().to_string()),
-                change_ref,
-                reason,
-                approved_by,
+        Cmd::Baseline(c @ (BaselineCmd::Save { .. } | BaselineCmd::Revise { .. })) => {
+            let (b, parent, revision) = match c {
+                BaselineCmd::Save { b } => (b, None, false),
+                BaselineCmd::Revise { b, from } => (b, from, true),
+                BaselineCmd::Ls => unreachable!("matched above"),
             };
-            let r = alma_ops::baseline::save(&path, &meta, m.dry_run)
-                .map_err(|e| Usage(format!("cannot save the baseline: {e}")))?;
+            let path = resolve_file(file)?;
+            let m = b.m;
+            let meta = mutate::BaselineMeta {
+                id: b.id,
+                name: b.name,
+                date: b
+                    .date
+                    .unwrap_or_else(|| alma_ops::files::today().to_string()),
+                change_ref: b.change_ref,
+                reason: b.reason,
+                approved_by: b.approved_by,
+                parent,
+            };
+            let r = if revision {
+                alma_ops::baseline::revise(&path, &meta, m.dry_run)
+            } else {
+                alma_ops::baseline::save(&path, &meta, m.dry_run)
+            }
+            .map_err(|e| Usage(format!("cannot save the baseline: {e}")))?;
             if json {
                 print_json(&r);
             } else if let Some(b) = &r.baseline {

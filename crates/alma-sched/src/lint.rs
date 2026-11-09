@@ -56,6 +56,16 @@ pub const RULES: &[Rule] = &[
     ),
     rule("L-BAS-05", Some(I), "Rebaseline without a change reference"),
     rule(
+        "L-BAS-06",
+        Some(E),
+        "Revised baseline rewrites planned value before its revision date",
+    ),
+    rule(
+        "L-BAS-09",
+        Some(W),
+        "Baseline revision above change_threshold without approved_by",
+    ),
+    rule(
         "L-CAL-01",
         Some(W),
         "Calendar working day differs from hours_per_day",
@@ -342,9 +352,15 @@ impl Linter<'_> {
     }
 }
 
-/// Rules that measure the plan against its active baseline (ADR 0019): `L-BAS-03` and the
-/// earned value rules. `snap` is the active baseline's snapshot.
-pub fn lint_baseline(plan: &Plan, schedule: &Schedule, snap: &Snapshot) -> Vec<Diagnostic> {
+/// Rules that measure the plan against its active baseline (ADR 0019, ADR 0020): `L-BAS-03`,
+/// `L-BAS-06`, `L-BAS-09` and the earned value rules. `snap` is the active baseline's
+/// snapshot; `parent` the snapshot of the baseline it revises, when it has one.
+pub fn lint_baseline(
+    plan: &Plan,
+    schedule: &Schedule,
+    snap: &Snapshot,
+    parent: Option<&Snapshot>,
+) -> Vec<Diagnostic> {
     let mut l = Linter {
         plan,
         index: PlanIndex::new(plan),
@@ -353,6 +369,76 @@ pub fn lint_baseline(plan: &Plan, schedule: &Schedule, snap: &Snapshot) -> Vec<D
     let units = plan.settings.units;
     let day = units.minutes_per_day;
     let cals = Calendars::new(plan);
+
+    // L-BAS-06 and L-BAS-09: a revision keeps the past and records who approved a big change.
+    let meta = plan.baselines.iter().find(|b| b.id == snap.baseline);
+    if let (Some(parent), Some(meta)) = (parent, meta) {
+        // Planned value before the revision date must be the parent's.
+        let cutoff = snap.revised_at.or(meta.date);
+        if let Some(cutoff) = cutoff {
+            let mut days: Vec<jiff::civil::Date> = snap
+                .pv
+                .iter()
+                .chain(parent.pv.iter())
+                .map(|(d, _)| *d)
+                .filter(|d| match snap.revised_at {
+                    Some(at) => *d <= at,
+                    None => *d < cutoff,
+                })
+                .collect();
+            days.sort_unstable();
+            days.dedup();
+            if let Some(d) = days
+                .into_iter()
+                .find(|d| snap.pv_through(*d) != parent.pv_through(*d))
+            {
+                let before = l.out.len();
+                l.report(
+                    usize::MAX,
+                    "L-BAS-06",
+                    E,
+                    format!(
+                        "baseline `{}` changes the planned value of `{}` before {cutoff}: on {d} it is {} instead of {}",
+                        snap.baseline,
+                        parent.baseline,
+                        snap.pv_through(d).round_dp(2),
+                        parent.pv_through(d).round_dp(2)
+                    ),
+                    vec![snap.baseline.clone(), parent.baseline.clone()],
+                );
+                l.hint_last(
+                    before,
+                    "past performance is never rewritten: revise from the status date instead, `alma baseline revise ID --change CR-…`",
+                );
+            }
+        }
+        let threshold = match plan.rules.params.get("change_threshold") {
+            Some(ParamValue::Number(n)) => Some(*n),
+            _ => None,
+        };
+        let change = snap.bac - parent.bac;
+        if let Some(t) = threshold
+            && change.abs() > t
+            && meta.approved_by.is_none()
+        {
+            let before = l.out.len();
+            l.report(
+                usize::MAX,
+                "L-BAS-09",
+                W,
+                format!(
+                    "baseline `{}` changes the budget by {} (above change_threshold {t}) and records no approval",
+                    snap.baseline,
+                    change.round_dp(2)
+                ),
+                vec![snap.baseline.clone()],
+            );
+            l.hint_last(
+                before,
+                "record who approved it: edit `approved_by` on the [[baseline]], or revise again with --approved-by",
+            );
+        }
+    }
 
     // L-BAS-03: milestones and the project finish against the baseline.
     let slip = l.param_minutes("finish_slip", 5 * day);

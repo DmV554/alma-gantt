@@ -490,7 +490,7 @@ pub struct MutationReport {
 }
 
 impl MutationReport {
-    fn rejected(errors: Vec<Diagnostic>, dry_run: bool) -> Self {
+    pub(crate) fn rejected(errors: Vec<Diagnostic>, dry_run: bool) -> Self {
         Self {
             schema: OUTPUT_SCHEMA,
             ok: false,
@@ -877,6 +877,8 @@ pub struct BaselineMeta {
     pub reason: Option<String>,
     /// Approver.
     pub approved_by: Option<String>,
+    /// The baseline this one revises (default: the active one).
+    pub parent: Option<String>,
 }
 
 /// Adds a `[[baseline]]` table, makes it the only active one, and links it to the previously
@@ -916,6 +918,24 @@ pub(crate) fn add_baseline(doc: &mut DocumentMut, m: &BaselineMeta) -> Result<()
                 b.remove("active");
             }
         }
+        if let Some(p) = &m.parent {
+            if !aot
+                .iter()
+                .any(|b| b.get("id").and_then(Item::as_str) == Some(p.as_str()))
+            {
+                return Err(
+                    op_err("E-OPS-02", format!("no baseline `{p}`"), &[&m.id, p])
+                        .with_hint("list them with `alma baseline ls`"),
+                );
+            }
+            parent = Some(p.clone());
+        }
+    } else if let Some(p) = &m.parent {
+        return Err(op_err(
+            "E-OPS-02",
+            format!("no baseline `{p}`"),
+            &[&m.id, p],
+        ));
     }
     let mut t = new_table();
     t.insert("id", value(m.id.as_str()));

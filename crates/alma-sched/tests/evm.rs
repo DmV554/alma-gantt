@@ -241,7 +241,7 @@ fn evm_rolls_up_and_keeps_removed_scope() {
 }
 
 fn codes(p: &Plan, snap: &Snapshot) -> Vec<&'static str> {
-    lint_baseline(p, &schedule(p).unwrap(), snap)
+    lint_baseline(p, &schedule(p).unwrap(), snap, None)
         .into_iter()
         .map(|d| d.code)
         .collect()
@@ -365,4 +365,64 @@ proptest::proptest! {
         }
         proptest::prop_assert!(e.project.ev <= e.project.bac);
     }
+}
+
+/// A revision keeps the past (knowledge notes, resources §6.1; ADR 0020).
+///
+/// Baseline `b1` planned 1500 through 01-22. Since then `a` finished early (seven days, 700)
+/// and `b` has 8 days left, so it now costs 13 days (1300). The current plan has 1200 through
+/// 01-22.
+/// - `revise` at 01-22 keeps 1500 through that day and adds the current plan's work after it:
+///   BAC = 1500 + (2000 − 1200) = 2300; `a` keeps 1000; `b` = 500 + (1300 − 500) = 1300.
+/// - Saving the current plan as is would rewrite the past (1200 instead of 1500): `L-BAS-06`.
+#[test]
+fn l_bas_06_09_revision_keeps_past_planned_value() {
+    let (mut p, b1) = example();
+    p.tasks[0].actual_finish = Some(date(1, 12));
+    p.tasks[1].remaining = Some(Duration::working(8 * DAY));
+    let s = schedule(&p).unwrap();
+    let at = date(1, 22);
+    let b2 = alma_sched::baseline::revise("b2", &p, &s, &b1, at);
+    assert_eq!(b2.revised_at, Some(at));
+    assert_eq!(b2.pv_through(at), d("1500"));
+    assert_eq!(b2.pv_through(date(1, 21)), b1.pv_through(date(1, 21)));
+    assert_eq!(b2.bac, d("2300"));
+    assert_eq!(
+        (b2.tasks[0].budget, b2.tasks[1].budget),
+        (d("1000"), d("1300"))
+    );
+    let e = evm(&p, &s, &b2).unwrap();
+    assert_eq!(e.project.bac, d("2300"));
+
+    p.baselines[0].active = false;
+    p.baselines.push(Baseline {
+        id: "b2".into(),
+        name: "b2".into(),
+        date: Some(at),
+        active: true,
+        parent: Some("b1".into()),
+        change_ref: Some("CR-1".into()),
+        reason: None,
+        approved_by: None,
+    });
+    p.rules.severity.insert("L-EVM-01".into(), None);
+    p.rules.severity.insert("L-EVM-05".into(), None);
+    let bas = |p: &Plan, snap: &Snapshot| -> Vec<&'static str> {
+        lint_baseline(p, &s, snap, Some(&b1))
+            .into_iter()
+            .map(|d| d.code)
+            .filter(|c| c.starts_with("L-BAS"))
+            .collect()
+    };
+    assert!(bas(&p, &b2).is_empty());
+    // A plain save of the current plan rewrites what was planned before 01-22.
+    let rewritten = snapshot("b2", &p, &s);
+    assert_eq!(bas(&p, &rewritten), ["L-BAS-06"]);
+    // The revision raises the budget by 300: above a threshold of 100 it needs an approver.
+    p.rules
+        .params
+        .insert("change_threshold".into(), ParamValue::Number(d("100")));
+    assert_eq!(bas(&p, &b2), ["L-BAS-09"]);
+    p.baselines[1].approved_by = Some("Sponsor".into());
+    assert!(bas(&p, &b2).is_empty());
 }

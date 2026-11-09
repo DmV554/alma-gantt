@@ -497,6 +497,9 @@ pub struct Snapshot {
     /// True when tasks carry their own budget and planned value (snapshot format 1); format 0
     /// snapshots cannot be used for earned value.
     pub per_task: bool,
+    /// For a revision (`alma baseline revise`): the status date it was made at. Planned value
+    /// through that day is the parent's; after it, the plan's at the time (ADR 0020).
+    pub revised_at: Option<Date>,
 }
 
 impl Snapshot {

@@ -89,8 +89,18 @@ pub fn load_file(path: &std::path::Path, src: &str) -> Loaded {
     if let (Some(plan), Some(schedule)) = (&l.plan, &l.schedule)
         && let Ok(Some(snap)) = baseline::snapshot_for(plan, path, None)
     {
-        l.diagnostics
-            .extend(alma_sched::lint_baseline(plan, schedule, &snap));
+        let parent = plan
+            .baselines
+            .iter()
+            .find(|b| b.id == snap.baseline)
+            .and_then(|b| b.parent.as_deref())
+            .and_then(|p| baseline::read_snapshot(path, p).ok());
+        l.diagnostics.extend(alma_sched::lint_baseline(
+            plan,
+            schedule,
+            &snap,
+            parent.as_ref(),
+        ));
     }
     l
 }

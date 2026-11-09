@@ -1398,3 +1398,88 @@ fn earned_value_from_the_cli() {
         21.0
     );
 }
+
+#[test]
+fn baseline_revision_keeps_the_past() {
+    let p = Plan::new("revise");
+    let (code, _) = p.json(&["baseline", "save", "b1", "--date", "2027-01-04"]);
+    assert_eq!(code, 0);
+    // A revision needs a status date; refused without touching anything.
+    let before = p.text();
+    let (code, v) = p.json(&["baseline", "revise", "b2", "--change", "CR-7"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-04")),
+        "{v}"
+    );
+    assert_eq!(p.text(), before);
+    assert!(!p.dir.join(".alma/baselines/plan/b2.toml").exists());
+
+    p.json(&["progress", "date", "2027-03-31"]);
+    p.json(&[
+        "progress",
+        "set",
+        "discovery",
+        "--start",
+        "2027-01-04",
+        "--finish",
+        "2027-02-26",
+    ]);
+    p.json(&["progress", "set", "kickoff", "--finish", "2027-01-04"]);
+    p.json(&["progress", "set", "decision-gate", "--finish", "2027-02-26"]);
+    let (_, ev1) = p.json(&["evm"]);
+
+    // A dry run writes neither file.
+    let (code, v) = p.json(&[
+        "baseline",
+        "revise",
+        "b2",
+        "--change",
+        "CR-7",
+        "--date",
+        "2027-03-31",
+        "--dry-run",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert!(!p.dir.join(".alma/baselines/plan/b2.toml").exists());
+    let (code, v) = p.json(&[
+        "baseline",
+        "revise",
+        "b2",
+        "--change",
+        "CR-7",
+        "--reason",
+        "Discovery took two weeks more",
+        "--approved-by",
+        "Sponsor",
+        "--date",
+        "2027-03-31",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let text = p.text();
+    assert!(text.contains("id = \"b2\""), "{text}");
+    assert!(text.contains("parent = \"b1\""), "{text}");
+    let (_, v) = p.json(&["baseline", "ls"]);
+    assert_eq!(v["baselines"][1]["revised_at"], "2027-03-31");
+
+    // Planned value through the status date is the same; the plan after it is the new target.
+    let (_, ev2) = p.json(&["evm"]);
+    assert_eq!(ev2["baseline"], "b2");
+    assert_eq!(ev2["project"]["pv"], ev1["project"]["pv"]);
+    let (_, v) = p.json(&["check"]);
+    assert!(!v.to_string().contains("L-BAS-06"), "{v}");
+
+    // Saving instead of revising after progress rewrites the past: L-BAS-06.
+    let (code, _) = p.json(&["baseline", "save", "b3", "--date", "2027-03-31"]);
+    assert_eq!(code, 0);
+    let (_, v) = p.json(&["check"]);
+    assert!(v.to_string().contains("L-BAS-06"), "{v}");
+
+    // Unknown parent.
+    let (code, v) = p.json(&["baseline", "revise", "b4", "--from", "nope"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-02")),
+        "{v}"
+    );
+}

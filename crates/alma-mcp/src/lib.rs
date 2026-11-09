@@ -376,6 +376,24 @@ pub fn tools() -> Vec<Tool> {
             ),
         )
         .annotate(ToolAnnotations::new().read_only(false).destructive(false).idempotent(false)),
+        Tool::new(
+            "baseline_revise",
+            "Revise the active baseline after progress (ADR 0020): planned value through the status date stays the parent's, so past performance is never rewritten; the work after it follows the current plan. Give the change request (`change_ref`) and who approved it.",
+            schema(
+                json!({
+                    "id": { "type": "string" },
+                    "from": { "type": "string", "description": "Baseline to revise (default: the active one)" },
+                    "name": { "type": "string" },
+                    "change_ref": { "type": "string", "description": "Change request that approved it" },
+                    "reason": { "type": "string" },
+                    "approved_by": { "type": "string" },
+                    "date": { "type": "string", "description": "YYYY-MM-DD (default today)" },
+                    "dry_run": { "type": "boolean" },
+                }),
+                &["id"],
+            ),
+        )
+        .annotate(ToolAnnotations::new().read_only(false).destructive(false).idempotent(false)),
         read_only(Tool::new(
             "diff",
             "What moved compared with another version of the plan: a file or a git revision.",
@@ -777,7 +795,7 @@ impl AlmaServer {
                     false,
                 )
             }
-            "baseline_save" => {
+            "baseline_save" | "baseline_revise" => {
                 let path = self.plan_path(args)?;
                 let id = str_arg(args, "id").unwrap_or_default().to_string();
                 let s = |k| str_arg(args, k).map(str::to_string);
@@ -788,9 +806,15 @@ impl AlmaServer {
                     change_ref: s("change_ref"),
                     reason: s("reason"),
                     approved_by: s("approved_by"),
+                    parent: s("from"),
                 };
                 let _guard = self.write_lock.lock().unwrap_or_else(|p| p.into_inner());
-                match alma_ops::baseline::save(&path, &meta, bool_arg(args, "dry_run")) {
+                let result = if name == "baseline_revise" {
+                    alma_ops::baseline::revise(&path, &meta, bool_arg(args, "dry_run"))
+                } else {
+                    alma_ops::baseline::save(&path, &meta, bool_arg(args, "dry_run"))
+                };
+                match result {
                     Ok(r) => Outcome::from(&r, !r.report.ok),
                     Err(e) => Outcome::error("E-CLI-01", format!("cannot save the baseline: {e}")),
                 }

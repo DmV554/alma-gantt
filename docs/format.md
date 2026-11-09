@@ -162,7 +162,8 @@ max_lag = "10d"
 - Only `L-*` codes can be configured. `E-*` codes are always errors (§9).
 - Parameters: `max_lag` (`L-DEP-11`), `emv_tolerance` (`L-RISK-02`), `finish_slip`
   (duration, default `"5d"`, `L-BAS-03`), `cv_threshold` and `sv_threshold` (percent, default
-  `10`, `L-EVM-01`), `tcpi_max` (default `1.1`, `L-EVM-05`). Set them with `alma rule param`.
+  `10`, `L-EVM-01`), `tcpi_max` (default `1.1`, `L-EVM-05`), `change_threshold` (money, no
+  default, `L-BAS-09`). Set them with `alma rule param`.
 - A single node can silence a rule with `allow = ["L-DEP-02"]` (task key, tier A). Prefer
   `allow` over turning a rule off for the whole plan.
 

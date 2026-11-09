@@ -413,6 +413,14 @@ fn earned_value_tool() {
     assert_eq!(r.json["project"]["ev"], 474.0);
     assert_eq!(r.json["project"]["ac"], 300.0);
     let r = s.call(
+        "baseline_revise",
+        &args(json!({ "id": "b2", "change_ref": "CR-1", "date": "2027-03-31" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("evm", &args(json!({})));
+    assert_eq!(r.json["baseline"], "b2");
+    assert_eq!(r.json["project"]["ev"], 474.0);
+    let r = s.call(
         "rule_param",
         &args(json!({ "name": "tcpi_max", "value": "2" })),
     );
