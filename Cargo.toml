@@ -29,6 +29,7 @@ rmcp = { version = "=3.9.0", default-features = false, features = ["server", "tr
 tokio = { version = "=1.54.1", default-features = false, features = ["rt"] }
 base64 = "=0.23.1"
 resvg = { version = "=0.49.0", default-features = false, features = ["text", "system-fonts"] }
+rust_xlsxwriter = { version = "=0.102.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

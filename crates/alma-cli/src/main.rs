@@ -117,14 +117,15 @@ enum Cmd {
         #[command(flatten)]
         m: MutArgs,
     },
-    /// Export a chart (.svg, .png) or the task table (.csv); `-` writes SVG or CSV to stdout.
+    /// Export a chart (.svg, .png), the task table (.csv) or the cost workbook (.xlsx: cost per
+    /// period, tasks, resources, risks); `-` writes SVG or CSV to stdout.
     /// Charts: the Gantt chart (default), a resource histogram, the S-curve. `render` is an
     /// alias.
     #[command(alias = "render")]
     Export {
         /// Output file; the extension picks the format unless --format is given.
         out: PathBuf,
-        /// svg, png or csv.
+        /// svg, png, csv or xlsx.
         #[arg(long)]
         format: Option<String>,
         /// gantt, histogram (needs --resource) or scurve.
@@ -133,7 +134,7 @@ enum Cmd {
         /// Resource id, for --chart histogram.
         #[arg(long)]
         resource: Option<String>,
-        /// day, week or month, for histogram (default week) and scurve (default month).
+        /// day, week or month, for histogram (default week), scurve and xlsx (default month).
         #[arg(long)]
         period: Option<String>,
         /// Baseline for the planned value line of the S-curve (default: the active one).
@@ -183,6 +184,12 @@ enum Cmd {
     /// Cost reserves: contingency (inside the cost baseline) and management reserve.
     #[command(subcommand)]
     Reserve(ReserveCmd),
+    /// Identified risks: probability and impact; their EMV sizes contingency.
+    #[command(subcommand)]
+    Risk(RiskCmd),
+    /// Funding: money available from a date, checked against cumulative spend.
+    #[command(subcommand)]
+    Funding(FundingCmd),
     /// Baselines: frozen copies of dates and costs to measure the plan against.
     #[command(subcommand)]
     Baseline(BaselineCmd),
@@ -428,12 +435,99 @@ enum ReserveCmd {
         /// How the amount was sized.
         #[arg(long)]
         basis: Option<String>,
+        /// Risks it covers, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        risks: Vec<String>,
         #[command(flatten)]
         m: MutArgs,
     },
     /// Remove a reserve.
     Rm {
         /// Reserve id.
+        id: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum RiskCmd {
+    /// Add a risk.
+    Add {
+        /// Risk id.
+        id: String,
+        /// Name.
+        #[arg(long)]
+        name: String,
+        /// Probability between 0 and 1, e.g. 0.3.
+        #[arg(long)]
+        probability: String,
+        /// Cost impact, e.g. 200.
+        #[arg(long)]
+        impact: Option<String>,
+        /// Time impact, e.g. 10d.
+        #[arg(long)]
+        impact_time: Option<String>,
+        /// threat (default) or opportunity.
+        #[arg(long)]
+        sign: Option<String>,
+        /// Owner.
+        #[arg(long)]
+        owner: Option<String>,
+        /// Tasks it affects, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        affects: Vec<String>,
+        /// Risks with a common cause share a group.
+        #[arg(long)]
+        correlation_group: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Change a risk: --field status=closed, --field probability=0.1, …
+    Set {
+        /// Risk id.
+        id: String,
+        /// KEY=VALUE (repeatable).
+        #[arg(long = "field")]
+        fields: Vec<String>,
+        /// Remove a key (repeatable).
+        #[arg(long)]
+        unset: Vec<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Remove a risk (refused while a reserve covers it).
+    Rm {
+        /// Risk id.
+        id: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// List risks with their EMV and how contingency covers them.
+    Ls,
+}
+
+#[derive(Subcommand)]
+enum FundingCmd {
+    /// Add funding available from a date.
+    Add {
+        /// Funding id.
+        id: String,
+        /// Day the money is available (YYYY-MM-DD).
+        #[arg(long)]
+        date: String,
+        /// Amount, e.g. 2000.
+        #[arg(long)]
+        amount: String,
+        /// Where it comes from.
+        #[arg(long)]
+        source: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Remove a funding entry.
+    Rm {
+        /// Funding id.
         id: String,
         #[command(flatten)]
         m: MutArgs,
@@ -1083,6 +1177,14 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 } else {
                     println!("total: {:.2} {cur}", r.total);
                 }
+                if let Some(f) = &r.funding {
+                    match (&f.short_on, f.short_by) {
+                        (Some(d), Some(by)) => {
+                            println!("funding {:.2} {cur}: short by {by:.2} on {d}", f.total)
+                        }
+                        _ => println!("funding {:.2} {cur}: enough at every date", f.total),
+                    }
+                }
                 if !r.unpriced.is_empty() {
                     println!("no rate (cost 0): {}", r.unpriced.join(", "));
                 }
@@ -1140,6 +1242,7 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                     kind,
                     scope,
                     basis,
+                    risks,
                     m,
                 } => (
                     Op::ReserveAdd {
@@ -1148,10 +1251,124 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                         kind,
                         scope,
                         basis,
+                        risks,
                     },
                     m,
                 ),
                 ReserveCmd::Rm { id, m } => (Op::ReserveRm { id }, m),
+            };
+            mutation(file, &[op], m.dry_run, json)
+        }
+        Cmd::Risk(RiskCmd::Ls) => {
+            let (_, l) = loaded(file)?;
+            let Some(plan) = l.plan.as_ref() else {
+                return Ok(scheduled(&l).unwrap_or(ExitCode::from(1)));
+            };
+            let r = alma_ops::finance::risks(plan);
+            if json {
+                print_json(&r);
+            } else {
+                for k in &r.risks {
+                    let covered = if k.reserves.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\tcovered by {}", k.reserves.join(","))
+                    };
+                    println!(
+                        "{}\t{}\t{}\tp={}\tEMV {:.2}\t{}d{covered}",
+                        k.id, k.status, k.sign, k.probability, k.emv, k.emv_days
+                    );
+                }
+                println!(
+                    "EMV of open risks {:.2}; contingency {:.2}",
+                    r.total_emv, r.contingency
+                );
+                for c in &r.coverage {
+                    println!("  {}: {:.2} for EMV {:.2}", c.reserve, c.amount, c.emv);
+                }
+                if !r.uncovered.is_empty() {
+                    println!("not covered by any reserve: {}", r.uncovered.join(", "));
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Risk(c) => {
+            let (op, m) = match c {
+                RiskCmd::Add {
+                    id,
+                    name,
+                    probability,
+                    impact,
+                    impact_time,
+                    sign,
+                    owner,
+                    affects,
+                    correlation_group,
+                    m,
+                } => (
+                    Op::RiskAdd {
+                        id,
+                        name,
+                        probability,
+                        impact,
+                        impact_time,
+                        sign,
+                        owner,
+                        affects,
+                        correlation_group,
+                    },
+                    m,
+                ),
+                RiskCmd::Set {
+                    id,
+                    fields,
+                    unset,
+                    m,
+                } => {
+                    let mut map = BTreeMap::new();
+                    for kv in fields {
+                        let (k, v) = kv.split_once('=').ok_or_else(|| {
+                            Usage(format!("--field expects KEY=VALUE, got `{kv}`"))
+                        })?;
+                        let v = if k == "affects" {
+                            FieldValue::List(v.split(',').map(str::to_string).collect())
+                        } else {
+                            FieldValue::Text(v.to_string())
+                        };
+                        map.insert(k.to_string(), v);
+                    }
+                    (
+                        Op::RiskSet {
+                            id,
+                            fields: map,
+                            unset,
+                        },
+                        m,
+                    )
+                }
+                RiskCmd::Rm { id, m } => (Op::RiskRm { id }, m),
+                RiskCmd::Ls => unreachable!("handled above"),
+            };
+            mutation(file, &[op], m.dry_run, json)
+        }
+        Cmd::Funding(c) => {
+            let (op, m) = match c {
+                FundingCmd::Add {
+                    id,
+                    date,
+                    amount,
+                    source,
+                    m,
+                } => (
+                    Op::FundingAdd {
+                        id,
+                        date,
+                        amount,
+                        source,
+                    },
+                    m,
+                ),
+                FundingCmd::Rm { id, m } => (Op::FundingRm { id }, m),
             };
             mutation(file, &[op], m.dry_run, json)
         }
@@ -1405,17 +1622,17 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 return Ok(code);
             }
             let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
-            let baseline = if chart.as_deref() == Some("scurve") {
-                alma_ops::baseline::snapshot_for(plan, &path, baseline.as_deref()).map_err(Usage)?
-            } else {
-                None
-            };
             let format = format.unwrap_or_else(|| {
                 out.extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("svg")
                     .to_ascii_lowercase()
             });
+            let baseline = if chart.as_deref() == Some("scurve") || format == "xlsx" {
+                alma_ops::baseline::snapshot_for(plan, &path, baseline.as_deref()).map_err(Usage)?
+            } else {
+                None
+            };
             let req = alma_ops::export::RenderRequest {
                 range,
                 depth,
@@ -1434,13 +1651,20 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                     .into_bytes(),
                 "png" => alma_ops::export::png(plan, s, &req).map_err(Usage)?,
                 "csv" => alma_ops::export::csv(plan, s).into_bytes(),
+                "xlsx" => alma_ops::export::xlsx(
+                    plan,
+                    s,
+                    req.period.as_deref().unwrap_or("month"),
+                    req.baseline.as_ref(),
+                )
+                .map_err(Usage)?,
                 other => {
                     return Err(Usage(format!(
-                        "unknown format `{other}`; use svg, png or csv"
+                        "unknown format `{other}`; use svg, png, csv or xlsx"
                     )));
                 }
             };
-            let warnings = if format == "csv" {
+            let warnings = if format == "csv" || format == "xlsx" {
                 Vec::new()
             } else {
                 alma_ops::export::warnings(plan, s, &req).map_err(Usage)?
@@ -1451,10 +1675,11 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 }
             }
             if out.as_os_str() == "-" {
-                if format == "png" {
-                    return Err(Usage(
-                        "PNG cannot be written to stdout; give a file name".into(),
-                    ));
+                if format == "png" || format == "xlsx" {
+                    return Err(Usage(format!(
+                        "{} cannot be written to stdout; give a file name",
+                        format.to_uppercase()
+                    )));
                 }
                 print!("{}", String::from_utf8_lossy(&bytes));
                 return Ok(ExitCode::SUCCESS);

@@ -120,7 +120,7 @@ fn e_fmt_05_reserved_key() {
     ));
     assert_eq!(parsed.diagnostics[0].code, "E-FMT-05");
     assert!(parsed.diagnostics[0].message.contains("M4"));
-    assert_eq!(codes("[[risk]]\nid = \"r\"\n"), ["E-FMT-05"]);
+    assert_eq!(codes("[[contract]]\nid = \"k\"\n"), ["E-FMT-05"]);
 }
 
 #[test]
@@ -193,7 +193,38 @@ fn reserves_need_an_amount_string_and_a_known_scope() {
     );
     assert_eq!(
         codes("[[reserve]]\nid = \"c\"\namount = \"3\"\nrisks = [\"r1\"]\n"),
-        ["E-FMT-05"]
+        ["E-REF-03"],
+        "risks must exist"
+    );
+}
+
+#[test]
+fn risks_and_funding() {
+    let ok = "[[task]]\nid = \"a\"\nname = \"A\"\n\
+              [[risk]]\nid = \"r1\"\nname = \"Late\"\nprobability = 0.3\nimpact = \"200\"\nimpact_time = \"10d\"\naffects = [\"a\"]\n\
+              [[reserve]]\nid = \"c\"\namount = \"60\"\nrisks = [\"r1\"]\n\
+              [[funding]]\nid = \"f1\"\ndate = 2027-01-04\namount = \"500\"\nsource = \"Client\"\n";
+    assert!(codes(ok).is_empty(), "{:?}", codes(ok));
+    let plan = parse(&format!("{HEAD}{ok}")).plan.unwrap();
+    assert_eq!(plan.risks[0].probability.to_string(), "0.3");
+    assert_eq!(plan.reserves[0].risks, ["r1"]);
+    assert_eq!(plan.funding[0].amount.to_string(), "500");
+    assert_eq!(
+        codes("[[risk]]\nid = \"r\"\nprobability = 1.5\n"),
+        ["E-FMT-03"]
+    );
+    assert_eq!(codes("[[risk]]\nid = \"r\"\n"), ["E-FMT-03"]);
+    assert_eq!(
+        codes("[[risk]]\nid = \"r\"\nprobability = 0.1\naffects = [\"zz\"]\n"),
+        ["E-REF-03"]
+    );
+    assert_eq!(
+        codes("[[reserve]]\nid = \"c\"\namount = \"1\"\nrisks = [\"zz\"]\n"),
+        ["E-REF-03"]
+    );
+    assert_eq!(
+        codes("[[funding]]\nid = \"f\"\namount = \"1\"\n"),
+        ["E-FMT-03"]
     );
 }
 
@@ -266,6 +297,8 @@ const DOC_TABLES: &[(&str, &str)] = &[
     ("### 6.7 `[[cadence]]`", "cadence"),
     ("### 6.9 `[[baseline]]`", "baseline"),
     ("### 6.10 `[[reserve]]`", "reserve"),
+    ("### 6.11 `[[risk]]`", "risk"),
+    ("### 6.12 `[[funding]]`", "funding"),
 ];
 
 fn backticked(cell: &str) -> Vec<String> {
@@ -346,6 +379,8 @@ fn format_doc_matches_key_registry() {
         "cadence",
         "baseline",
         "reserve",
+        "risk",
+        "funding",
     ] {
         for def in KEYS
             .iter()

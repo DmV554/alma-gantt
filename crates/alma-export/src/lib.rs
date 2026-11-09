@@ -2,6 +2,8 @@
 //! same bytes. PNG rasterizes that SVG with `resvg` using the system's sans-serif fonts
 //! (ADR 0009), so PNG pixels may differ between machines; the SVG does not.
 
+pub mod xlsx;
+
 use std::fmt::Write;
 
 use alma_layout::{Anchor, Color, DisplayList, Prim, Weight};

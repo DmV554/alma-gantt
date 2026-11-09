@@ -40,7 +40,7 @@ pub fn snapshot(id: &str, plan: &Plan, schedule: &Schedule) -> Snapshot {
 }
 
 /// Daily cumulative cost, only on days where it changes.
-fn daily(plan: &Plan, c: &Costs) -> Vec<(Date, Decimal)> {
+pub fn daily(plan: &Plan, c: &Costs) -> Vec<(Date, Decimal)> {
     let cals = Calendars::new(plan);
     let mut per_day: HashMap<i64, Decimal> = HashMap::new();
     for line in &c.lines {

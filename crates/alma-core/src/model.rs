@@ -237,6 +237,16 @@ string_enum! {
 }
 
 string_enum! {
+    /// Whether a resource's own calendar limits the tasks it works on (ADR 0017).
+    ResourceCalendars {
+        /// A task works only when its calendar and every assigned resource's calendar do.
+        Intersect = "intersect",
+        /// Tasks follow their own calendar; resource calendars only set capacity.
+        Ignore = "ignore",
+    }
+}
+
+string_enum! {
     /// Reporting period.
     ReportingPeriod {
         /// One week.
@@ -309,6 +319,68 @@ pub struct Plan {
     pub baselines: Vec<Baseline>,
     /// `[[reserve]]`, source order (ADR 0014).
     pub reserves: Vec<CostReserve>,
+    /// `[[risk]]`, source order (ADR 0015).
+    pub risks: Vec<Risk>,
+    /// `[[funding]]`, source order (ADR 0015).
+    pub funding: Vec<Funding>,
+}
+
+string_enum! {
+    /// Whether a risk costs or saves.
+    RiskSign {
+        /// A threat: adds to the expected cost.
+        Threat = "threat",
+        /// An opportunity: subtracts.
+        Opportunity = "opportunity",
+    }
+}
+
+string_enum! {
+    /// Life cycle of a risk.
+    RiskStatus {
+        /// Still possible.
+        Open = "open",
+        /// Occurred, avoided or expired.
+        Closed = "closed",
+    }
+}
+
+/// `[[risk]]`: an identified risk (knowledge notes, resources §7.1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Risk {
+    /// Id.
+    pub id: String,
+    /// Name.
+    pub name: String,
+    /// Probability, 0 to 1.
+    pub probability: Decimal,
+    /// Cost impact if it occurs.
+    pub impact: Option<Decimal>,
+    /// Schedule impact if it occurs.
+    pub impact_time: Option<Duration>,
+    /// Threat or opportunity.
+    pub sign: RiskSign,
+    /// Open or closed.
+    pub status: RiskStatus,
+    /// Owner.
+    pub owner: Option<String>,
+    /// Tasks it affects.
+    pub affects: Vec<String>,
+    /// Risks with a common cause share a group.
+    pub correlation_group: Option<String>,
+}
+
+/// `[[funding]]`: money that becomes available on a date (knowledge notes, resources §4.4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Funding {
+    /// Id.
+    pub id: String,
+    /// Day the money is available.
+    pub date: Date,
+    /// Amount.
+    pub amount: Decimal,
+    /// Where it comes from.
+    pub source: Option<String>,
 }
 
 /// `[[reserve]]`: a cost reserve. Contingency is part of the cost baseline; management reserve
@@ -325,6 +397,8 @@ pub struct CostReserve {
     pub scope: Option<String>,
     /// Basis: how the amount was sized.
     pub basis: Option<String>,
+    /// Risks it covers.
+    pub risks: Vec<String>,
 }
 
 /// One task in a snapshot.
@@ -433,6 +507,8 @@ pub struct ScheduleSettings {
     pub three_point: Dist,
     /// Resource leveling mode.
     pub leveling: Leveling,
+    /// How resource calendars combine with task calendars.
+    pub resource_calendars: ResourceCalendars,
 }
 
 impl Default for ScheduleSettings {
@@ -449,6 +525,7 @@ impl Default for ScheduleSettings {
             rolling_wave_horizon: None,
             three_point: Dist::Beta,
             leveling: Leveling::Off,
+            resource_calendars: ResourceCalendars::Intersect,
         }
     }
 }

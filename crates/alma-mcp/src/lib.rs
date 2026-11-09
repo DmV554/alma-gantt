@@ -189,6 +189,15 @@ fn op_description(op: &str) -> &'static str {
             "Add a cost reserve: kind `contingency` (identified risks; inside the cost baseline, accrues at the finish of its scope) or `management` (the unforeseen; outside the baseline, inside the budget). Give a `basis`."
         }
         "reserve.rm" => "Remove a cost reserve.",
+        "risk.add" => {
+            "Add an identified risk: probability (0-1), cost impact and/or time impact (e.g. 10d), threat or opportunity. EMV = probability × impact sizes contingency; link risks to a reserve with `risks`."
+        }
+        "risk.set" => "Set or unset fields of a risk (status = closed when it no longer applies).",
+        "risk.rm" => "Remove a risk; refused while a reserve covers it.",
+        "funding.add" => {
+            "Add funding available from a date. Cumulative spend above cumulative funding is L-COST-04."
+        }
+        "funding.rm" => "Remove a funding entry.",
         "level" => {
             "Resolve resource over-allocation: mode `leveling` delays tasks until their resources fit (the finish may move), `smoothing` only within free float, `off` turns it off. Saved in the plan; the result lists delayed tasks and what each waits for."
         }
@@ -290,6 +299,11 @@ pub fn tools() -> Vec<Tool> {
             ),
         )),
         read_only(Tool::new(
+            "risk_list",
+            "Risks with their EMV (probability × impact), total EMV of open risks, contingency coverage per reserve and uncovered risks.",
+            schema(json!({}), &[]),
+        )),
+        read_only(Tool::new(
             "baseline_list",
             "Saved baselines with the finish date and budget each one promised; one is active.",
             schema(json!({}), &[]),
@@ -360,7 +374,7 @@ pub fn tools() -> Vec<Tool> {
         )),
         Tool::new(
             "export",
-            "Write a chart (.svg, .png: gantt, histogram or scurve) or the task table (.csv) to a file.",
+            "Write a chart (.svg, .png: gantt, histogram or scurve), the task table (.csv) or the cost workbook (.xlsx: cost per period by resource and category, tasks, resources, risks) to a file.",
             schema(
                 json!({
                     "out": { "type": "string" },
@@ -649,6 +663,13 @@ impl AlmaServer {
                 .map_err(|m| Outcome::error("E-CLI-01", m))?;
                 Outcome::from(&r, false)
             }
+            "risk_list" => {
+                let (_, l) = self.load(args)?;
+                let Some(plan) = l.plan.as_ref() else {
+                    return Err(Outcome::error("E-OPS-04", "the plan file has errors"));
+                };
+                Outcome::from(&alma_ops::finance::risks(plan), false)
+            }
             "baseline_list" => {
                 let (path, l) = self.load(args)?;
                 let Some(plan) = l.plan.as_ref() else {
@@ -771,7 +792,20 @@ impl AlmaServer {
                     "svg" => alma_ops::export::svg(plan, s, &req).map(String::into_bytes),
                     "png" => alma_ops::export::png(plan, s, &req),
                     "csv" => Ok(alma_ops::export::csv(plan, s).into_bytes()),
-                    other => Err(format!("unknown format `{other}`; use .svg, .png or .csv")),
+                    "xlsx" => {
+                        alma_ops::baseline::snapshot_for(plan, &path, str_arg(args, "baseline"))
+                            .and_then(|snap| {
+                                alma_ops::export::xlsx(
+                                    plan,
+                                    s,
+                                    str_arg(args, "period").unwrap_or("month"),
+                                    snap.as_ref(),
+                                )
+                            })
+                    }
+                    other => Err(format!(
+                        "unknown format `{other}`; use .svg, .png, .csv or .xlsx"
+                    )),
                 }
                 .map_err(|m| Outcome::error("E-CLI-01", m))?;
                 alma_ops::files::write_bytes(&out, &bytes)
