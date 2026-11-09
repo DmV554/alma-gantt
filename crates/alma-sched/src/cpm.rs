@@ -55,6 +55,10 @@ pub enum Driver {
     Actual,
     /// Work not started yet cannot start before the status date (ADR 0018).
     StatusDate,
+    /// A story spans its iteration (ADR 0021).
+    Iteration,
+    /// A story in no iteration: backlog, with no dates of its own.
+    Backlog,
 }
 
 /// Progress of a task at the status date (ADR 0018).
@@ -280,7 +284,7 @@ pub fn expected_minutes(o: i64, m: i64, p: i64, dist: Dist) -> i64 {
 pub fn resolve_duration(plan: &Plan, i: usize) -> Duration {
     let t = &plan.tasks[i];
     match t.kind {
-        TaskKind::Milestone | TaskKind::Loe => return Duration::ZERO,
+        TaskKind::Milestone | TaskKind::Loe | TaskKind::Story => return Duration::ZERO,
         TaskKind::Task | TaskKind::Buffer => {}
     }
     if t.sched_type == SchedType::FixedEffort
@@ -438,9 +442,35 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
     let cals = Calendars::new(plan);
     let mut diagnostics = Vec::new();
 
-    let durations: Vec<Duration> = (0..n).map(|i| resolve_duration(plan, i)).collect();
+    // A story planned in an iteration is fixed to its window, like a must-start-on task, so
+    // links on its container follow the iterations (ADR 0021). A backlog story is out of the
+    // network.
+    let windows: HashMap<String, (Instant, Instant)> = crate::agile::iterations(plan, &cals)
+        .into_iter()
+        .map(|it| (it.id, (it.start, it.end)))
+        .collect();
+    let story_window = |i: usize| -> Option<(Instant, Instant)> {
+        let t = &plan.tasks[i];
+        if t.kind != TaskKind::Story || index.is_summary(i) {
+            return None;
+        }
+        t.iteration.as_ref().and_then(|it| windows.get(it)).copied()
+    };
+    let durations: Vec<Duration> = (0..n)
+        .map(|i| match story_window(i) {
+            Some((a, b)) => Duration::working(cals.of_task(plan, i).between(a, b)),
+            None => resolve_duration(plan, i),
+        })
+        .collect();
     let in_network: Vec<bool> = (0..n)
-        .map(|i| !index.is_summary(i) && plan.tasks[i].kind != TaskKind::Loe)
+        .map(|i| {
+            !index.is_summary(i)
+                && match plan.tasks[i].kind {
+                    TaskKind::Loe => false,
+                    TaskKind::Story => story_window(i).is_some(),
+                    _ => true,
+                }
+        })
         .collect();
 
     // Expand links over summaries; `edges` is in (owner, dep, pred leaf, succ leaf) order.
@@ -571,6 +601,21 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
     let place =
         |j: usize, es: &[Instant], ef: &[Instant]| -> Option<(Instant, Instant, Progress)> {
             let t = &plan.tasks[j];
+            if let Some((a, b)) = story_window(j) {
+                let p = if t.actual_finish.is_some() {
+                    Progress::Complete
+                } else if t.actual_start.is_some() {
+                    Progress::InProgress {
+                        done_until: a,
+                        resume: a,
+                        remaining: 0,
+                        waits: false,
+                    }
+                } else {
+                    Progress::NotStarted
+                };
+                return Some((a, b, p));
+            }
             if !t.has_progress() {
                 return None;
             }
@@ -712,7 +757,11 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
         if let Some((start, finish, p)) = place(j, &es, &ef) {
             es[j] = start;
             ef[j] = finish;
-            driver[j] = Driver::Actual;
+            driver[j] = if plan.tasks[j].kind == TaskKind::Story {
+                Driver::Iteration
+            } else {
+                Driver::Actual
+            };
             progress[j] = p;
             continue;
         }
@@ -987,6 +1036,25 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
             d.free_float = None;
         }
     }
+    // Backlog stories have no dates: they sit at the project start, out of roll-ups.
+    for (i, t) in plan.tasks.iter().enumerate() {
+        if t.kind != TaskKind::Story || index.is_summary(i) || in_network[i] {
+            continue;
+        }
+        let d = &mut tasks[i];
+        d.es = project_start;
+        d.ls = project_start;
+        d.ef = project_start;
+        d.lf = project_start;
+        d.driver = Driver::Backlog;
+        d.total_float = None;
+        d.free_float = None;
+        d.progress = if t.actual_finish.is_some() {
+            Progress::Complete
+        } else {
+            Progress::NotStarted
+        };
+    }
     roll_up(plan, &index, &mut tasks, false);
 
     diagnostics.sort_by(|a: &Diagnostic, b| a.code.cmp(b.code));
@@ -1012,6 +1080,7 @@ fn roll_up(plan: &Plan, index: &PlanIndex, tasks: &mut [TaskDates], network_only
             .leaves(i)
             .into_iter()
             .filter(|&l| !network_only || tasks[l].in_network)
+            .filter(|&l| tasks[l].driver != Driver::Backlog)
             .collect();
         if leaves.is_empty() {
             continue;

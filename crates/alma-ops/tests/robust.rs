@@ -307,7 +307,18 @@ fn arb_op() -> impl Strategy<Value = Op> {
             name: None,
             prefix: Some("b".into()),
             calendar: None,
+            capacity: Some("30".into()),
         }),
+        (
+            prop_oneof![Just("team-b"), Just("nope")],
+            prop_oneof![Just("capacity"), Just("count"), Just("id")],
+            prop_oneof![Just("25"), Just("6"), Just("x")],
+        )
+            .prop_map(|(c, k, v)| Op::CadenceSet {
+                id: c.into(),
+                fields: fields(&[(k, v)]),
+                unset: Vec::new(),
+            }),
     ]
 }
 

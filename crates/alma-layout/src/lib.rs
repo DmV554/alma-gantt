@@ -273,9 +273,11 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
     let index = PlanIndex::new(plan);
     let cals = Calendars::new(plan);
 
-    // Rows: WBS order, cut at max_depth.
+    // Rows: WBS order, cut at max_depth. Stories are never bars: their container spans their
+    // iterations (knowledge notes, scheduling §5.10).
     let rows: Vec<usize> = (0..plan.tasks.len())
         .filter(|&i| opts.max_depth.is_none_or(|d| index.depth(i) <= d))
+        .filter(|&i| plan.tasks[i].kind != TaskKind::Story)
         .collect();
     let row_of: HashMap<usize, usize> = rows.iter().enumerate().map(|(r, &i)| (i, r)).collect();
     let codes = wbs_codes(plan, &index);
@@ -726,6 +728,8 @@ pub fn gantt(plan: &Plan, schedule: &Schedule, opts: &Options) -> DisplayList {
                 stroke: None,
                 dashed: false,
             }),
+            // Stories have no rows (filtered above).
+            TaskKind::Story => {}
             TaskKind::Buffer => p.push(Prim::Rect {
                 x: x1,
                 y: mid - bar_h / 2.0,

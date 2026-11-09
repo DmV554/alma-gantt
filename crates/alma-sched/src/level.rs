@@ -144,7 +144,11 @@ pub(crate) fn level(
             // Started work stays where it happened; it still holds its resources.
             early.es[j] = start;
             early.ef[j] = finish;
-            early.driver[j] = Driver::Actual;
+            early.driver[j] = if plan.tasks[j].kind == alma_core::model::TaskKind::Story {
+                Driver::Iteration
+            } else {
+                Driver::Actual
+            };
             for (a, b) in work_spans(start, finish, progress) {
                 if b > a {
                     for &(r, units) in &pool.assigned[j] {

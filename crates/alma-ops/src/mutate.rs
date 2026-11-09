@@ -198,6 +198,21 @@ pub enum Op {
         /// Calendar id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         calendar: Option<String>,
+        /// Points the team can take on per iteration.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capacity: Option<String>,
+    },
+    /// Set or unset keys of a cadence (capacity, count, name, …).
+    #[serde(rename = "cadence.set")]
+    CadenceSet {
+        /// Id.
+        id: String,
+        /// Keys to set.
+        #[serde(default)]
+        fields: BTreeMap<String, FieldValue>,
+        /// Keys to remove.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unset: Vec<String>,
     },
     /// Remove a cadence.
     #[serde(rename = "cadence.rm")]
@@ -1097,10 +1112,10 @@ fn set_task_fields(
                 set_sub_field(table, id, "fixed_cost", "amount", v)?;
                 continue;
             }
-            "physical_pct" => match v {
+            "physical_pct" | "points" => match v {
                 FieldValue::Text(t) => number_item(id, key, t)?,
                 FieldValue::List(_) => {
-                    return Err(op_err("E-OPS-04", "physical_pct is a number", &[id]));
+                    return Err(op_err("E-OPS-04", format!("{key} is a number"), &[id]));
                 }
             },
             _ => to_item(key, v),
@@ -1554,6 +1569,7 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
             name,
             prefix,
             calendar,
+            capacity,
         } => {
             let date: toml_edit::Datetime = start.parse().map_err(|_| {
                 op_err(
@@ -1576,7 +1592,49 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
             if let Some(c) = calendar {
                 t.insert("calendar", value(c.as_str()));
             }
+            if let Some(c) = capacity {
+                t.insert("capacity", number_item(id, "capacity", c)?);
+            }
             push_top_table(doc, "cadence", id, t)
+        }
+        Op::CadenceSet { id, fields, unset } => {
+            for key in fields.keys().chain(unset.iter()) {
+                let required = ["id", "start", "length", "count"];
+                let bad = keys::lookup("cadence", key).is_none()
+                    || key == "id"
+                    || (unset.contains(key) && required.contains(&key.as_str()));
+                if bad {
+                    let known: Vec<&str> = keys::keys_of("cadence")
+                        .map(|k| k.key)
+                        .filter(|k| *k != "id")
+                        .collect();
+                    return Err(op_err(
+                        "E-FMT-02",
+                        format!("`{key}` cannot be set or removed on a cadence"),
+                        &[id],
+                    )
+                    .with_hint(format!(
+                        "a cadence takes: {} (start, length and count are required)",
+                        known.join(", ")
+                    )));
+                }
+            }
+            let mut items = Vec::new();
+            for (k, v) in fields {
+                let item = match (k.as_str(), v) {
+                    ("count" | "capacity", FieldValue::Text(x)) => number_item(id, k, x)?,
+                    _ => to_item(k, v),
+                };
+                items.push((k.as_str(), item));
+            }
+            let table = top_table_mut(doc, "cadence", id)?;
+            for k in unset {
+                table.remove(k);
+            }
+            for (k, item) in items {
+                insert_canonical(table, "cadence", k, item);
+            }
+            Ok(())
         }
         Op::CadenceRm { id } => {
             let aot = doc

@@ -528,7 +528,7 @@ fn rule_set_and_keys() {
     );
     assert!(
         keys.iter()
-            .any(|k| k["key"] == "iteration" && k["status"] == "reserved for M4")
+            .any(|k| k["key"] == "crash" && k["status"] == "reserved for M3")
     );
     let (_, v) = p.json(&["critical"]);
     assert_eq!(v["project_finish"], "2027-09-24");
@@ -1482,4 +1482,92 @@ fn baseline_revision_keeps_the_past() {
         (1, Some("E-OPS-02")),
         "{v}"
     );
+}
+
+#[test]
+fn iterations_stories_and_velocity() {
+    let p = Plan::new("agile");
+    // The fixture's cadence `sprints` (s01…s12, two weeks from 2027-04-05) gets a capacity.
+    let (code, v) = p.json(&["iter", "set", "sprints", "capacity=20", "--dry-run"]);
+    assert_eq!(code, 0, "{v}");
+    let (code, v) = p.json(&["iter", "set", "sprints", "capacity=20"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(p.text().contains("capacity = 20\n"), "{}", p.text());
+    let (code, v) = p.json(&["iter", "set", "sprints", "id=x"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-FMT-02"))
+    );
+
+    // Stories go under a container of their own.
+    let (code, v) = p.json(&[
+        "task", "add", "backlog", "--name", "Backlog", "--parent", "gate",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    for (id, it, pts) in [
+        ("st-a", Some("s01"), "8"),
+        ("st-b", Some("s01"), "5"),
+        ("st-c", None, "13"),
+    ] {
+        let mut args: Vec<String> = [
+            "task", "add", id, "--name", "Story", "--parent", "backlog", "--kind", "story",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        args.extend(["--field".into(), format!("points={pts}")]);
+        if let Some(it) = it {
+            args.extend(["--field".into(), format!("iteration={it}")]);
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (code, v) = p.json(&refs);
+        assert_eq!(code, 0, "{v}");
+    }
+    assert!(p.text().contains("points = 8\n"), "{}", p.text());
+    let (code, _) = p.json(&["fmt", "--check"]);
+    assert_eq!(code, 0);
+
+    let (code, v) = p.json(&["iter", "ls"]);
+    assert_eq!(code, 0, "{v}");
+    let s01 = &v["cadences"][0]["iterations"][0];
+    assert_eq!(
+        (s01["id"].as_str(), s01["committed"].as_f64()),
+        (Some("s01"), Some(13.0))
+    );
+    assert_eq!(s01["capacity"], 20.0);
+    assert_eq!(
+        (v["backlog"].as_f64(), v["backlog_items"].as_u64()),
+        (Some(13.0), Some(1))
+    );
+    assert!(
+        v["cadences"][0]["note"]
+            .as_str()
+            .unwrap()
+            .contains("status date")
+    );
+    let (code, _) = p.json(&["iter", "ls", "--cadence", "nope"]);
+    assert_eq!(code, 2);
+
+    // A story planned in a sprint spans it; `show` and `explain` say so.
+    let (_, v) = p.json(&["show", "st-a"]);
+    assert_eq!(
+        (v["start"].as_str(), v["finish"].as_str()),
+        (Some("2027-04-05"), Some("2027-04-16"))
+    );
+    let (_, v) = p.json(&["explain", "st-a"]);
+    assert!(v.to_string().contains("iteration `s01`"), "{v}");
+    // Over capacity.
+    let (code, v) = p.json(&["task", "set", "st-c", "--field", "iteration=s01"]);
+    assert_eq!(code, 0, "{v}");
+    let (_, v) = p.json(&["check"]);
+    assert!(v.to_string().contains("L-AGL-07"), "{v}");
+    // A story with a duration is refused, and the file stays as it was.
+    let before = p.text();
+    let (code, v) = p.json(&["task", "set", "st-a", "--duration", "2d"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-FMT-03")),
+        "{v}"
+    );
+    assert_eq!(p.text(), before);
 }

@@ -429,3 +429,32 @@ fn earned_value_tool() {
     let r = s.call("check", &args(json!({ "min": "warn" })));
     assert!(r.json.to_string().contains("L-EVM-01"), "{}", r.json);
 }
+
+#[test]
+fn iteration_tools() {
+    let d = Dir::new("agile");
+    let s = d.server();
+    let r = s.call(
+        "cadence_set",
+        &args(json!({ "id": "sprints", "fields": { "capacity": "21" } })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert!(d.text().contains("capacity = 21"));
+    let r = s.call(
+        "task_add",
+        &args(json!({ "id": "stories", "name": "Stories", "parent": "gate" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call(
+        "task_add",
+        &args(json!({ "id": "st1", "name": "Story", "parent": "stories",
+            "fields": { "kind": "story", "iteration": "s02", "points": "5" } })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("iterations", &args(json!({})));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["cadences"][0]["iterations"][1]["committed"], 5.0);
+    assert_eq!(r.json["cadences"][0]["iterations"][1]["capacity"], 21.0);
+    let r = s.call("iterations", &args(json!({ "cadence": "nope" })));
+    assert!(r.is_error);
+}

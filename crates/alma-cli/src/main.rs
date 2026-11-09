@@ -707,6 +707,21 @@ enum IterCmd {
         /// Calendar id.
         #[arg(long)]
         calendar: Option<String>,
+        /// Points the team can take on per iteration.
+        #[arg(long)]
+        capacity: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Change a cadence: KEY=VALUE pairs (capacity=30, count=14, name="Team A", …).
+    Set {
+        /// Cadence id.
+        id: String,
+        /// KEY=VALUE pairs.
+        pairs: Vec<String>,
+        /// Remove a key (repeatable).
+        #[arg(long)]
+        unset: Vec<String>,
         #[command(flatten)]
         m: MutArgs,
     },
@@ -716,6 +731,12 @@ enum IterCmd {
         id: String,
         #[command(flatten)]
         m: MutArgs,
+    },
+    /// Iterations with committed and finished points, velocity and a forecast finish.
+    Ls {
+        /// Only this cadence.
+        #[arg(long)]
+        cadence: Option<String>,
     },
 }
 
@@ -880,6 +901,18 @@ enum MinSeverity {
 
 /// A command failure that is not about the plan (exit code 2).
 struct Usage(String);
+
+/// `KEY=VALUE` pairs from the command line.
+fn kv_pairs(pairs: &[String]) -> Result<BTreeMap<String, FieldValue>, Usage> {
+    let mut fields = BTreeMap::new();
+    for kv in pairs {
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| Usage(format!("expected KEY=VALUE, got `{kv}`")))?;
+        fields.insert(k.to_string(), FieldValue::Text(v.to_string()));
+    }
+    Ok(fields)
+}
 
 /// Reports errors about the plan (exit code 1).
 fn report_errors(errors: &[Diagnostic], json: bool) -> ExitCode {
@@ -2048,6 +2081,47 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Cmd::Iter(IterCmd::Ls { cadence }) => {
+            let (_, l) = loaded(file)?;
+            let Some(plan) = l.plan.as_ref() else {
+                return Ok(scheduled(&l).unwrap_or(ExitCode::from(1)));
+            };
+            let r = alma_ops::agile::report(plan, cadence.as_deref()).map_err(Usage)?;
+            if json {
+                print_json(&r);
+            } else {
+                for c in &r.cadences {
+                    println!("{} ({}):", c.id, c.name);
+                    for it in &c.iterations {
+                        let cap = it.capacity.map_or(String::new(), |x| format!(" of {x}"));
+                        println!(
+                            "  {}\t{} to {}\t{}\t{} points{cap}, {} done, {} items",
+                            it.id, it.start, it.finish, it.state, it.committed, it.done, it.items
+                        );
+                    }
+                    match (&c.forecast, &c.note) {
+                        (Some(f), _) => println!(
+                            "  velocity {} ({}); {} points left: {} more iterations, finish {}",
+                            f.velocity,
+                            c.velocities
+                                .iter()
+                                .map(f64::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            f.remaining,
+                            f.iterations,
+                            f.finish
+                        ),
+                        (None, Some(n)) => println!("  {n}"),
+                        _ => {}
+                    }
+                }
+                if r.backlog_items > 0 {
+                    println!("backlog: {} stories, {} points", r.backlog_items, r.backlog);
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Iter(c) => {
             let (op, m) = match c {
                 IterCmd::Add {
@@ -2058,6 +2132,7 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                     name,
                     prefix,
                     calendar,
+                    capacity,
                     m,
                 } => (
                     Op::CadenceAdd {
@@ -2068,10 +2143,25 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                         name,
                         prefix,
                         calendar,
+                        capacity,
+                    },
+                    m,
+                ),
+                IterCmd::Set {
+                    id,
+                    pairs,
+                    unset,
+                    m,
+                } => (
+                    Op::CadenceSet {
+                        id,
+                        fields: kv_pairs(&pairs)?,
+                        unset,
                     },
                     m,
                 ),
                 IterCmd::Rm { id, m } => (Op::CadenceRm { id }, m),
+                IterCmd::Ls { .. } => unreachable!("handled above"),
             };
             mutation(file, &[op], m.dry_run, json)
         }

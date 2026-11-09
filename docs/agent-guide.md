@@ -86,7 +86,9 @@ alma cal except <calendar> --name "Holiday" --from 2027-09-17 [--to 2027-09-20] 
 alma project set [--calendar ID] [--deadline 2027-12-10] [--name "..."]
 alma settings set key=value ... [--unset key]   # [settings.schedule]: hours_per_day, phase, …
 alma rule set L-WBS-05 off|info|warn|error      # this plan only; prefer `allow` per task
-alma iter add sprints --prefix s --start 2027-04-05 --length 10d --repeat 12   # s01..s12
+alma iter add sprints --prefix s --start 2027-04-05 --length 10d --repeat 12 [--capacity 30]
+alma iter set sprints capacity=30 [count=14]   # s01..s12; capacity is points per sprint
+alma iter ls [--cadence sprints]         # committed and done points, velocity, forecast finish
 alma iter rm sprints
 alma apply ops.json | -                  # batch (JSON array or JSON lines)
 alma fmt [--check]                       # canonical layout; comments kept
@@ -160,13 +162,20 @@ alma guide
 
   Level-of-effort tasks earn as planned, and reserves are not earned. EVM needs a status date
   and a baseline saved by this version: `alma baseline save` (snapshot format 1).
+- Agile work: under an `iterative` container, add stories:
+  `task add st-12 --parent app --kind story --field points=5 --field iteration=s03`.
+  - A story has no duration and no links. It spans its sprint, or sits in the backlog without
+    an `iteration`.
+  - Mark a story done with `progress set st-12 --finish D`.
+  - Link predictive work to the container, not to stories: a milestone after the container
+    waits for its last planned sprint.
+  - `iter ls` gives velocity per team and a forecast; never add velocities of different
+    cadences.
 - Contract dates: use `--deadline` on the milestone, not a hard constraint. A missed deadline
   shows as negative float (`L-SCH-05`) without moving the task.
 
 ## Things alma does not do yet
 
-- Tasks cannot be linked to a sprint (`iteration` is reserved for M4). To align work with
-  sprints, start it with `--constraint SNET:<sprint start>` or link it to a milestone.
 - A resource has one capacity (`--max`) for the whole project. For a team that grows or
   shrinks, use two resources. A resource with its own calendar (`res set ID --calendar CAL`)
   limits the tasks it works on to the time both calendars share.

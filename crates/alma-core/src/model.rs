@@ -51,6 +51,8 @@ string_enum! {
         Loe = "loe",
         /// Time reserve.
         Buffer = "buffer",
+        /// Backlog item: no duration of its own; its dates are its iteration's (ADR 0021).
+        Story = "story",
     }
 }
 
@@ -715,6 +717,8 @@ pub struct Cadence {
     pub count: u32,
     /// Calendar id.
     pub calendar: Option<String>,
+    /// Points the team can take on per iteration (ADR 0021).
+    pub capacity: Option<Decimal>,
 }
 
 impl Cadence {
@@ -796,6 +800,10 @@ pub struct Task {
     pub ev_method: Option<EvMethod>,
     /// Actual cost through the status date, cumulative; on any WBS node.
     pub actual_cost: Option<Decimal>,
+    /// Iteration the work is planned in (a generated iteration id; ADR 0021).
+    pub iteration: Option<String>,
+    /// Relative size in story points.
+    pub points: Option<Decimal>,
     /// Lint codes silenced on this node.
     pub allow: Vec<String>,
     /// Tags.
@@ -843,6 +851,8 @@ impl Task {
             physical_pct: None,
             ev_method: None,
             actual_cost: None,
+            iteration: None,
+            points: None,
             allow: Vec::new(),
             tags: Vec::new(),
             custom: BTreeMap::new(),

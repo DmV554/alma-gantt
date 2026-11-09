@@ -179,7 +179,10 @@ fn op_description(op: &str) -> &'static str {
         }
         "assign" => "Assign a resource to a task with units (1 = full time).",
         "unassign" => "Remove an assignment.",
-        "cadence.add" => "Add a sprint cadence: COUNT equal iterations from START, ids <prefix>01…",
+        "cadence.add" => {
+            "Add a sprint cadence: COUNT equal iterations from START, ids <prefix>01…; `capacity` is points per iteration. Plan work in them with the task key `iteration` (stories: kind = story, with `points`)."
+        }
+        "cadence.set" => "Change a cadence: capacity, count, name, length, start, calendar.",
         "cadence.rm" => "Remove a cadence.",
         "project.set" => {
             "Set project keys: name, calendar, deadline, currency, description, status_date."
@@ -329,6 +332,14 @@ pub fn tools() -> Vec<Tool> {
                     "limit": { "type": "integer", "minimum": 1 },
                     "cursor": { "type": "string" },
                 }),
+                &[],
+            ),
+        )),
+        read_only(Tool::new(
+            "iterations",
+            "Iterations of each cadence with committed and finished points, capacity, per-iteration SPI, velocity of the ended ones and a forecast finish (mean, best and worst velocity). Points are per team: velocities are never summed across cadences.",
+            schema(
+                json!({ "cadence": { "type": "string", "description": "Only this cadence" } }),
                 &[],
             ),
         )),
@@ -749,6 +760,15 @@ impl AlmaServer {
                     &alma_ops::baseline::variance(plan, s, &snap, bool_arg(args, "changed"), page),
                     false,
                 )
+            }
+            "iterations" => {
+                let (_, l) = self.load(args)?;
+                let Some(plan) = l.plan.as_ref() else {
+                    return Err(Outcome::error("E-OPS-04", "the plan file has errors"));
+                };
+                let r = alma_ops::agile::report(plan, str_arg(args, "cadence"))
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                Outcome::from(&r, false)
             }
             "evm" => {
                 let (path, l) = self.scheduled(args)?;

@@ -116,10 +116,10 @@ fn e_fmt_04_bad_duration() {
 #[test]
 fn e_fmt_05_reserved_key() {
     let parsed = parse(&format!(
-        "{HEAD}[[task]]\nid = \"a\"\nname = \"A\"\npoints = 3\n"
+        "{HEAD}[[task]]\nid = \"a\"\nname = \"A\"\ncrash = 3\n"
     ));
     assert_eq!(parsed.diagnostics[0].code, "E-FMT-05");
-    assert!(parsed.diagnostics[0].message.contains("M4"));
+    assert!(parsed.diagnostics[0].message.contains("M3"));
     assert_eq!(codes("[[contract]]\nid = \"k\"\n"), ["E-FMT-05"]);
 }
 
@@ -300,6 +300,7 @@ const DOC_TABLES: &[(&str, &str)] = &[
     ("### 6.11 `[[risk]]`", "risk"),
     ("### 6.12 `[[funding]]`", "funding"),
     ("### 6.13 `[[task]]`: progress", "task"),
+    ("### 6.14 `[[task]]`: iterations", "task"),
 ];
 
 fn backticked(cell: &str) -> Vec<String> {
@@ -342,7 +343,7 @@ fn format_doc_matches_key_registry() {
                     .iter()
                     .position(|h| h == "Tier")
                     .map(|i| cells[i].chars().next().unwrap())
-                    .unwrap_or(if *table == "cadence" { 'B' } else { 'A' });
+                    .unwrap_or('A');
                 for key in backticked(&cells[key_col]) {
                     documented.push((table.to_string(), key, tier));
                 }

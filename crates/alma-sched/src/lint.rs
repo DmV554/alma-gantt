@@ -42,6 +42,21 @@ use Severity::{Error as E, Info as I, Warn as W};
 
 /// Every rule implemented, in code order.
 pub const RULES: &[Rule] = &[
+    rule(
+        "L-AGL-04",
+        Some(W),
+        "Work planned in an iteration but scheduled outside it",
+    ),
+    rule(
+        "L-AGL-06",
+        Some(I),
+        "Iteration longer than a month or shorter than a week",
+    ),
+    rule(
+        "L-AGL-07",
+        Some(W),
+        "Points committed to an iteration above the cadence capacity",
+    ),
     rule("L-BAS-01", Some(W), "Progress recorded but no baseline"),
     rule("L-BAS-02", Some(E), "Progress recorded but no status date"),
     rule(
@@ -921,11 +936,11 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                     );
                 }
             }
-            TaskKind::Buffer => {}
+            TaskKind::Buffer | TaskKind::Story => {}
         }
 
         // Open ends (not inside iterative/flow branches, not LOE, not external milestones).
-        let exempt = t.kind == TaskKind::Loe
+        let exempt = matches!(t.kind, TaskKind::Loe | TaskKind::Story)
             || t.class == Some(MilestoneClass::External)
             || l.effective_approach(i) != Approach::Predictive;
         if !exempt && !has_pred[i] && Some(i) != start_node {
@@ -1269,6 +1284,88 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                     "record the predecessors' actual dates, or, if the work really overlapped, make the link discretionary or SS",
                 );
             }
+        }
+    }
+
+    // Iterations (knowledge notes, scheduling §5.3, §5.6; ADR 0021).
+    let iters = crate::agile::iterations(plan, &cals);
+    for c in &plan.cadences {
+        let days = if c.length.elapsed {
+            c.length.minutes / (24 * 60) * units.days_per_week / 7
+        } else {
+            c.length.minutes / day
+        };
+        let month = units.days_per_week * 52 / 12;
+        if days > month || days < units.days_per_week {
+            let before = l.out.len();
+            l.report(
+                usize::MAX,
+                "L-AGL-06",
+                I,
+                format!(
+                    "cadence `{}` has iterations of {days} working days; timeboxes are usually one week to one month",
+                    c.id
+                ),
+                vec![c.id.clone()],
+            );
+            l.hint_last(
+                before,
+                "the Agile Practice Guide suggests two weeks; shorter loops give feedback sooner",
+            );
+        }
+    }
+    if let Some(s) = schedule {
+        for (i, t) in plan.tasks.iter().enumerate() {
+            let Some(it) = t
+                .iteration
+                .as_ref()
+                .and_then(|x| iters.iter().find(|w| &w.id == x))
+            else {
+                continue;
+            };
+            let d = &s.tasks[i];
+            if t.kind != TaskKind::Story && (d.es < it.start || d.ef > it.end) {
+                l.on(
+                    i,
+                    "L-AGL-04",
+                    format!(
+                        "`{}` is planned in iteration `{}` ({} to {}) but scheduled {} to {}",
+                        t.id,
+                        it.id,
+                        start_date(it.start),
+                        finish_date(it.end),
+                        start_date(d.es),
+                        finish_date(d.ef)
+                    ),
+                );
+            }
+        }
+    }
+    for it in &iters {
+        let Some(cap) = plan.cadences[it.cadence].capacity else {
+            continue;
+        };
+        let committed: Decimal = plan
+            .tasks
+            .iter()
+            .filter(|t| t.iteration.as_deref() == Some(it.id.as_str()))
+            .filter_map(|t| t.points)
+            .sum();
+        if committed > cap {
+            let before = l.out.len();
+            l.report(
+                usize::MAX,
+                "L-AGL-07",
+                W,
+                format!(
+                    "iteration `{}` has {} points committed, above the capacity of {}",
+                    it.id,
+                    committed.normalize(),
+                    cap.normalize()
+                ),
+                vec![it.id.clone()],
+            );
+            l.hint_last(before, "move stories to a later iteration or back to the backlog (`alma task set ID --unset iteration`)");
         }
     }
 

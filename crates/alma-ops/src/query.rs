@@ -415,6 +415,17 @@ pub fn explain(plan: &Plan, schedule: &Schedule, id: &str) -> Option<Vec<Explain
                 Some(by),
             ),
             Driver::Rollup | Driver::Span => ("derived".into(), None),
+            Driver::Iteration => (
+                format!(
+                    "story planned in iteration `{}`",
+                    t.iteration.clone().unwrap_or_default()
+                ),
+                None,
+            ),
+            Driver::Backlog => (
+                "story in the backlog: no iteration yet, so no dates".into(),
+                None,
+            ),
             Driver::Actual => {
                 let start = t.actual_start.or(t.actual_finish).map(|d| d.to_string());
                 let mut text = format!("started on {} (actual)", start.unwrap_or_default());

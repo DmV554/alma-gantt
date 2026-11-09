@@ -35,7 +35,7 @@ macro_rules! keys {
 /// Every key, grouped by table. Order inside a table is the canonical key order.
 pub const KEYS: &[KeyDef] = keys! {
     "top" => [
-        "project": A, "settings": A, "rules": A, "calendar": A, "resource": A, "cadence": B,
+        "project": A, "settings": A, "rules": A, "calendar": A, "resource": A, "cadence": A,
         "task": A, "release": R("M4"), "reserve": A, "risk": A, "funding": A,
         "contract": R("M3"), "scenario": R("M2"), "cashflow_item": R("M2"),
         "baseline": A, "ucp": R("a later milestone"),
@@ -78,7 +78,7 @@ pub const KEYS: &[KeyDef] = keys! {
         "deps": A, "assign": A, "fixed_cost": A, "allow": A, "tags": B, "custom": B,
         "actual_start": A, "actual_finish": A, "remaining": A, "physical_pct": A,
         "ev_method": A, "actual_cost": A,
-        "points": R("M4"), "iteration": R("M4"), "crash": R("M3"), "overlap": R("M3"),
+        "points": A, "iteration": A, "crash": R("M3"), "overlap": R("M3"),
         "risk_ref": R("M2"), "payment": R("M2"), "payment_ref": R("M2"),
         "requirement_refs": R("M2"), "contract": R("M3"), "account_code": R("M2"),
         "org_unit": R("M2"), "effort_type": R("M2"), "apportion_to": R("M2"),
@@ -104,7 +104,8 @@ pub const KEYS: &[KeyDef] = keys! {
     ],
     "resource.rate" => ["amount": B, "per": B],
     "cadence" => [
-        "id": B, "name": B, "prefix": B, "start": B, "length": B, "count": B, "calendar": B,
+        "id": A, "name": A, "prefix": A, "start": A, "length": A, "count": A, "calendar": A,
+        "capacity": A,
     ],
 };
 
