@@ -119,6 +119,11 @@ pub const RULES: &[Rule] = &[
         "Smoothing left an over-allocation it could not resolve within free float",
     ),
     rule(
+        "L-RES-03",
+        Some(E),
+        "Task and assigned resource calendars share no working time",
+    ),
+    rule(
         "L-RES-05",
         Some(W),
         "Resource with assignments but no rate (its cost counts as zero)",
@@ -900,6 +905,22 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
                 );
             }
         }
+    }
+
+    // Resource calendars (knowledge notes, resources §1.3).
+    for &(i, r) in &cals.disjoint {
+        let t = &plan.tasks[i];
+        let res = &plan.resources[r];
+        l.on(
+            i,
+            "L-RES-03",
+            format!(
+                "`{}` cannot be worked by `{}`: the task calendar and calendar `{}` share no working time, so the task keeps its own calendar",
+                t.id,
+                res.id,
+                res.calendar.clone().unwrap_or_default()
+            ),
+        );
     }
 
     // Costs (F-COST-07).

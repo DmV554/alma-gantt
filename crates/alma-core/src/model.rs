@@ -237,6 +237,16 @@ string_enum! {
 }
 
 string_enum! {
+    /// Whether a resource's own calendar limits the tasks it works on (ADR 0017).
+    ResourceCalendars {
+        /// A task works only when its calendar and every assigned resource's calendar do.
+        Intersect = "intersect",
+        /// Tasks follow their own calendar; resource calendars only set capacity.
+        Ignore = "ignore",
+    }
+}
+
+string_enum! {
     /// Reporting period.
     ReportingPeriod {
         /// One week.
@@ -497,6 +507,8 @@ pub struct ScheduleSettings {
     pub three_point: Dist,
     /// Resource leveling mode.
     pub leveling: Leveling,
+    /// How resource calendars combine with task calendars.
+    pub resource_calendars: ResourceCalendars,
 }
 
 impl Default for ScheduleSettings {
@@ -513,6 +525,7 @@ impl Default for ScheduleSettings {
             rolling_wave_horizon: None,
             three_point: Dist::Beta,
             leveling: Leveling::Off,
+            resource_calendars: ResourceCalendars::Intersect,
         }
     }
 }

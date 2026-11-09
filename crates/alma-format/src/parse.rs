@@ -551,6 +551,14 @@ fn read_settings(cx: &mut Cx, root: &toml_edit::Table) -> ScheduleSettings {
     if let Some(v) = f.enumerated(cx, "leveling", Leveling::parse, Leveling::VALUES) {
         s.leveling = v;
     }
+    if let Some(v) = f.enumerated(
+        cx,
+        "resource_calendars",
+        ResourceCalendars::parse,
+        ResourceCalendars::VALUES,
+    ) {
+        s.resource_calendars = v;
+    }
     s
 }
 

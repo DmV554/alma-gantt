@@ -49,7 +49,7 @@ pub const KEYS: &[KeyDef] = keys! {
         "hours_per_day": A, "days_per_week": A, "late_anchor": A, "critical_definition": A,
         "critical_threshold": A, "near_critical": A, "lag_calendar": A, "phase": A,
         "reporting_period": B, "rolling_wave_horizon": B, "three_point": A,
-        "leveling": A,
+        "leveling": A, "resource_calendars": A,
         "progress_logic": R("M4"), "agile_drives": R("M4"), "control_threshold": R("M4"),
     ],
     "rules" => ["severity": A, "params": A],

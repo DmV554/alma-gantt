@@ -136,8 +136,9 @@ alma guide
 
 - Tasks cannot be linked to a sprint (`iteration` is reserved for M4). To align work with
   sprints, start it with `--constraint SNET:<sprint start>` or link it to a milestone.
-- A resource has one capacity (`--max`) for the whole project, and its calendar is not combined
-  with the task calendar yet. For a team that grows or shrinks, use two resources.
+- A resource has one capacity (`--max`) for the whole project. For a team that grows or
+  shrinks, use two resources. A resource with its own calendar (`res set ID --calendar CAL`)
+  limits the tasks it works on to the time both calendars share.
 - Leveling picks tasks by least float; other priority rules come later. To force an order,
   add a dependency with a rationale.
 - The 8–80 h work package rule (`L-WBS-05`) suits small plans. For large work packages, split

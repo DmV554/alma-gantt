@@ -144,6 +144,7 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 | `rolling_wave_horizon` | B | duration | none | Used by `L-WBS-11` |
 | `three_point` | A | `beta \| triangular` | `beta` | Formula for tE (F-SCH-03/04) |
 | `leveling` | A | `off \| smoothing \| leveling` | `off` | How the scheduler resolves resource over-allocation (ADR 0011). `smoothing` delays tasks within their free float only; `leveling` may move the finish date |
+| `resource_calendars` | A | `intersect \| ignore` | `intersect` | With `intersect`, a task assigned to a resource that has its own `calendar` works only when both calendars do (ADR 0017); no shared working time is `L-RES-03` |
 | `progress_logic`, `agile_drives`, `control_threshold` | R (M4) | | | |
 
 `[settings.cost]` is reserved (R, M2).

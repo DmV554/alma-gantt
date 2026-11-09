@@ -360,3 +360,39 @@ fn leveling_5000_tasks_stays_interactive() {
         assert!(elapsed.as_millis() < 1000, "took {elapsed:?}");
     }
 }
+
+/// A resource with its own calendar narrows the working time of the tasks it works on
+/// (knowledge notes, resources §1.3, ADR 0017). Worked by someone available Monday to
+/// Wednesday, a 3-day task fits in one week and a 4-day task needs the next Monday, unless
+/// `resource_calendars = "ignore"`.
+#[test]
+fn l_res_03_resource_calendars_narrow_tasks() {
+    let mut p = plan(vec![task("a", 3, &[], &[("pt", 1)])], &[("pt", 1)]);
+    let mut part = Calendar::standard();
+    part.id = "mon-wed".into();
+    part.workdays = [true, true, true, false, false, false, false];
+    p.calendars.push(part);
+    p.resources[0].calendar = Some("mon-wed".into());
+    let s = schedule(&p).unwrap();
+    // 3 days of work on Mon–Wed only: Monday 4 to Wednesday 6 January.
+    assert_eq!(days(&p, s.tasks[0].ef), 3.0);
+    let mut q = p.clone();
+    q.tasks[0].duration = Some(Duration::working(4 * DAY));
+    let s = schedule(&q).unwrap();
+    // The fourth day is the next Monday: 7 standard working days after the start.
+    assert_eq!(days(&q, s.tasks[0].ef), 6.0);
+    q.settings.resource_calendars = ResourceCalendars::Ignore;
+    assert_eq!(days(&q, schedule(&q).unwrap().tasks[0].ef), 4.0);
+
+    // No shared time: reported, and the task keeps its own calendar.
+    let mut r = p.clone();
+    r.calendars[0].workdays = [false, false, false, false, false, true, true];
+    let s = schedule(&r).unwrap();
+    assert_eq!(days(&r, s.tasks[0].ef), 3.0);
+    let codes: Vec<_> = lint(&r, Some(&s))
+        .into_iter()
+        .filter(|d| d.code == "L-RES-03")
+        .map(|d| d.severity)
+        .collect();
+    assert_eq!(codes, vec![Severity::Error]);
+}

@@ -54,6 +54,50 @@ impl WorkCalendar {
         }
     }
 
+    /// The working time both calendars share: a task worked by a resource with its own
+    /// calendar (knowledge notes, resources §1.3). Exceptions of either calendar become
+    /// exceptions of the result, keeping their names.
+    pub fn intersect(&self, other: &WorkCalendar) -> WorkCalendar {
+        let mut workdays = [false; 7];
+        for (d, w) in workdays.iter_mut().enumerate() {
+            *w = self.workdays[d] && other.workdays[d];
+        }
+        let mut days: Vec<i64> = self
+            .exceptions
+            .keys()
+            .chain(other.exceptions.keys())
+            .copied()
+            .collect();
+        days.sort_unstable();
+        days.dedup();
+        let mut exceptions = HashMap::new();
+        let mut exception_hours = Vec::new();
+        let mut exception_names = Vec::new();
+        for day in days {
+            exceptions.insert(day, exception_hours.len());
+            exception_hours.push(overlap(self.intervals(day), other.intervals(day)));
+            exception_names.push(
+                self.exception_on(day)
+                    .or_else(|| other.exception_on(day))
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+        }
+        WorkCalendar {
+            workdays,
+            hours: overlap(&self.hours, &other.hours),
+            exceptions,
+            exception_hours,
+            exception_names,
+        }
+    }
+
+    /// True when the calendar has any working time at all.
+    pub fn has_work(&self) -> bool {
+        (!self.hours.is_empty() && self.workdays.iter().any(|&w| w))
+            || self.exception_hours.iter().any(|h| !h.is_empty())
+    }
+
     /// Working intervals of a day.
     pub fn intervals(&self, day: i64) -> &[Interval] {
         if let Some(&idx) = self.exceptions.get(&day) {
@@ -179,6 +223,21 @@ impl WorkCalendar {
     }
 }
 
+/// The intersection of two sorted, non-overlapping interval lists.
+fn overlap(a: &[Interval], b: &[Interval]) -> Vec<Interval> {
+    let mut out = Vec::new();
+    for &(a0, a1) in a {
+        for &(b0, b1) in b {
+            let (lo, hi) = (a0.max(b0), a1.min(b1));
+            if lo < hi {
+                out.push((lo, hi));
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +251,33 @@ mod tests {
 
     fn std_cal() -> WorkCalendar {
         WorkCalendar::new(&Calendar::standard())
+    }
+
+    #[test]
+    fn intersection_keeps_shared_days_hours_and_exceptions() {
+        // A part-timer: Monday to Wednesday, mornings, with a day off on Tuesday 5 January.
+        let mut part = Calendar::standard();
+        part.workdays = [true, true, true, false, false, false, false];
+        part.hours = vec![(8 * 60, 12 * 60)];
+        part.exceptions.push(CalendarException {
+            name: "Day off".into(),
+            from: Date::constant(2027, 1, 5),
+            to: Date::constant(2027, 1, 5),
+            working: false,
+            hours: None,
+        });
+        let both = std_cal().intersect(&WorkCalendar::new(&part));
+        assert!(both.has_work());
+        let monday = day_number(Date::constant(2027, 1, 4));
+        assert_eq!(both.intervals(monday), &[(9 * 60, 12 * 60)]);
+        assert!(both.intervals(monday + 1).is_empty(), "day off");
+        assert_eq!(both.exception_on(monday + 1), Some("Day off"));
+        assert!(both.intervals(monday + 3).is_empty(), "Thursday");
+        // 6 h of work: Monday 3 h, (Tuesday off), Wednesday 3 h.
+        assert_eq!(both.add(at(2027, 1, 4, 9, 0), 360), at(2027, 1, 6, 12, 0));
+        let mut nights = Calendar::standard();
+        nights.hours = vec![(20 * 60, 23 * 60)];
+        assert!(!std_cal().intersect(&WorkCalendar::new(&nights)).has_work());
     }
 
     #[test]
