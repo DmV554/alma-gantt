@@ -1041,6 +1041,20 @@ fn read_task(cx: &mut Cx, f: &Fields<'_>) -> Option<Task> {
     t.actual_start = f.date(cx, "actual_start");
     t.actual_finish = f.date(cx, "actual_finish");
     t.remaining = f.duration(cx, "remaining", false);
+    t.physical_pct = f.number(cx, "physical_pct");
+    t.ev_method = f.enumerated(
+        cx,
+        "ev_method",
+        EvMethod::parse,
+        &[
+            "physical",
+            "0/100",
+            "50/50",
+            "20/80",
+            "S/F with S + F = 100",
+        ],
+    );
+    t.actual_cost = f.money(cx, "actual_cost");
     if let Some(item) = f.get("deps") {
         match tables_of(item) {
             Some(list) => {
@@ -1380,6 +1394,15 @@ fn validate(cx: &mut Cx, plan: &Plan, root: &toml_edit::Table) {
 
     // Progress (ADR 0018): recorded on leaf work, with dates and remaining work that agree.
     for (i, t) in plan.tasks.iter().enumerate() {
+        if t.actual_cost.is_some_and(|c| c < Decimal::ZERO) {
+            cx.err(
+                "E-FMT-03",
+                format!("task `{}` has a negative actual_cost", t.id),
+                task_span(i),
+            )
+            .ids([t.id.clone()])
+            .hint("actual_cost is the money spent so far, cumulative");
+        }
         if !t.has_progress() {
             continue;
         }
@@ -1427,6 +1450,24 @@ fn validate(cx: &mut Cx, plan: &Plan, root: &toml_edit::Table) {
                 bad(
                     format!("task `{}` has remaining work but has not started", t.id),
                     "set actual_start, or change `duration` for work not started yet",
+                );
+            }
+        }
+        if let Some(p) = t.physical_pct {
+            if p < Decimal::ZERO || p > Decimal::from(100) {
+                bad(
+                    format!("task `{}` has physical_pct {p}, outside 0 to 100", t.id),
+                    "physical_pct is a percentage: 40 means 40 % of the work is done",
+                );
+            } else if p > Decimal::ZERO && t.actual_start.is_none() && t.actual_finish.is_none() {
+                bad(
+                    format!("task `{}` is {p} % done but has not started", t.id),
+                    "set actual_start too: `alma progress set ID --start DATE --pct N`",
+                );
+            } else if p < Decimal::from(100) && t.actual_finish.is_some() {
+                bad(
+                    format!("task `{}` is finished but only {p} % done", t.id),
+                    "remove physical_pct (a finished task is 100 % done), or remove actual_finish",
                 );
             }
         }

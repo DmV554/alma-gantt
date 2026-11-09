@@ -147,7 +147,7 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 | `leveling` | A | `off \| smoothing \| leveling` | `off` | How the scheduler resolves resource over-allocation (ADR 0011). `smoothing` delays tasks within their free float only; `leveling` may move the finish date |
 | `resource_calendars` | A | `intersect \| ignore` | `intersect` | With `intersect`, a task assigned to a resource that has its own `calendar` works only when both calendars do (ADR 0017); no shared working time is `L-RES-03` |
 | `progress_logic` | A | `retained_logic \| progress_override` | `retained_logic` | How the remaining work of a started task is scheduled. `retained_logic`: it still waits for its unfinished predecessors. `progress_override`: once started, its links no longer hold it back (ADR 0018) |
-| `agile_drives`, `control_threshold` | R (M4) | | | |
+| `agile_drives` | R (M4) | | | |
 
 `[settings.cost]` is reserved (R, M2).
 
@@ -160,6 +160,9 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 max_lag = "10d"
 ```
 - Only `L-*` codes can be configured. `E-*` codes are always errors (§9).
+- Parameters: `max_lag` (`L-DEP-11`), `emv_tolerance` (`L-RISK-02`), `finish_slip`
+  (duration, default `"5d"`, `L-BAS-03`), `cv_threshold` and `sv_threshold` (percent, default
+  `10`, `L-EVM-01`), `tcpi_max` (default `1.1`, `L-EVM-05`). Set them with `alma rule param`.
 - A single node can silence a rule with `allow = ["L-DEP-02"]` (task key, tier A). Prefer
   `allow` over turning a rule off for the whole plan.
 
@@ -231,7 +234,7 @@ Per-weekday hours and per-resource exceptions are reserved for M2 (keys `week`, 
 | 28 | `tags` | B | array of strings | |
 | 29 | `custom` | B | table | Free-form fields (§3.4) |
 
-Reserved on tasks (R): `physical_pct`, `progress_rule`, `ev_method` (M4); `points`, `iteration`, `kind = story \| epic` (M4); `crash`,
+Reserved on tasks (R): `points`, `iteration`, `kind = story \| epic` (M4); `crash`,
 `overlap` (M3+); `risk_ref`, `payment`, `payment_ref`, `requirement_refs`, `contract`,
 `account_code`, `org_unit`, `effort_type`, `apportion_to`, `location` (M2+).
 
@@ -270,7 +273,8 @@ capacity and velocity are reserved (R, M4).
 ### 6.9 `[[baseline]]` (tier A)
 Metadata of a saved baseline (D14, ADR 0013). `alma baseline save` writes it together with the
 frozen dates and costs, which go to `.alma/baselines/<plan>/<id>.toml` next to the plan file.
-Commit that directory with the plan.
+Commit that directory with the plan. Snapshots are format 1 since ADR 0019: they add each task's own budget
+and planned value curve, which earned value needs. Format 0 snapshots are still read.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -337,6 +341,9 @@ remaining work of a task in progress, from the first working minute after the st
 | `actual_start` | date | none | Day work started (its first working minute) |
 | `actual_finish` | date | none | Day work finished (its last working minute). Needs `actual_start`, except on milestones, where either date marks the milestone as reached |
 | `remaining` | duration | duration − working time from `actual_start` to the status date | Work left on a started task at the status date |
+| `physical_pct` | number 0–100 | none | Physical percent complete, measured on the work, not on elapsed time. Earns value with `ev_method = "physical"` (ADR 0019). Above 0 needs `actual_start`; a finished task is 100 |
+| `ev_method` | `physical \| S/F` | `physical` | How progress earns the budget (F-COST-14): `physical` uses `physical_pct`; a fixed formula such as `0/100`, `50/50` or `20/80` earns S % at the actual start and the rest at the actual finish. Level-of-effort tasks earn as planned |
+| `actual_cost` | money string | none | Actual cost through the status date, cumulative. Allowed on any node, so cost can be recorded per control account; it rolls up |
 
 ---
 

@@ -411,6 +411,39 @@ pub struct CostReserve {
     pub risks: Vec<String>,
 }
 
+/// How progress on a task earns its budget (F-COST-14, ADR 0019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvMethod {
+    /// Physical percent complete, measured on the work (`physical_pct`).
+    Physical,
+    /// Fixed formula `S/F`: S % of the budget is earned at the actual start, the rest at the
+    /// actual finish (`0/100`, `50/50`, `20/80`).
+    Fixed {
+        /// Percent earned at the start, 0 to 100.
+        start: u8,
+    },
+}
+
+impl EvMethod {
+    /// Parses `physical` or `S/F` with S + F = 100.
+    pub fn parse(text: &str) -> Option<Self> {
+        if text == "physical" {
+            return Some(EvMethod::Physical);
+        }
+        let (a, b) = text.split_once('/')?;
+        let (a, b): (u8, u8) = (a.parse().ok()?, b.parse().ok()?);
+        (u16::from(a) + u16::from(b) == 100).then_some(EvMethod::Fixed { start: a })
+    }
+
+    /// The spelling used in plan files.
+    pub fn as_string(self) -> String {
+        match self {
+            EvMethod::Physical => "physical".into(),
+            EvMethod::Fixed { start } => format!("{start}/{}", 100 - start),
+        }
+    }
+}
+
 /// One task in a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapTask {
@@ -422,6 +455,27 @@ pub struct SnapTask {
     pub finish: crate::time::Instant,
     /// Cost of the task and its descendants.
     pub cost: Decimal,
+    /// The task's own budget (its assignments and fixed cost, no reserves, no descendants):
+    /// what earned value measures it against (ADR 0019).
+    pub budget: Decimal,
+    /// Cumulative planned value of the own budget at the end of each day on which some of it
+    /// accrues, date order.
+    pub pv: Vec<(Date, Decimal)>,
+}
+
+impl SnapTask {
+    /// Planned value of the task's own budget through the end of `date` (F-COST-13).
+    pub fn pv_through(&self, date: Date) -> Decimal {
+        cumulative_through(&self.pv, date)
+    }
+}
+
+fn cumulative_through(curve: &[(Date, Decimal)], date: Date) -> Decimal {
+    match curve.binary_search_by(|(d, _)| d.cmp(&date)) {
+        Ok(i) => curve[i].1,
+        Err(0) => Decimal::ZERO,
+        Err(i) => curve[i - 1].1,
+    }
 }
 
 /// What a baseline froze.
@@ -440,16 +494,15 @@ pub struct Snapshot {
     /// Cumulative planned cost at the end of each day on which some cost accrued, in date
     /// order. Days without an entry keep the previous value.
     pub pv: Vec<(Date, Decimal)>,
+    /// True when tasks carry their own budget and planned value (snapshot format 1); format 0
+    /// snapshots cannot be used for earned value.
+    pub per_task: bool,
 }
 
 impl Snapshot {
     /// Cumulative planned value at the end of `date` (F-COST-13).
     pub fn pv_through(&self, date: Date) -> Decimal {
-        match self.pv.binary_search_by(|(d, _)| d.cmp(&date)) {
-            Ok(i) => self.pv[i].1,
-            Err(0) => Decimal::ZERO,
-            Err(i) => self.pv[i - 1].1,
-        }
+        cumulative_through(&self.pv, date)
     }
 }
 
@@ -734,6 +787,12 @@ pub struct Task {
     pub actual_finish: Option<Date>,
     /// Progress: working time left on a started task at the status date.
     pub remaining: Option<Duration>,
+    /// Earned value: physical percent complete, 0 to 100 (ADR 0019).
+    pub physical_pct: Option<Decimal>,
+    /// Earned value: how progress earns the task's budget.
+    pub ev_method: Option<EvMethod>,
+    /// Actual cost through the status date, cumulative; on any WBS node.
+    pub actual_cost: Option<Decimal>,
     /// Lint codes silenced on this node.
     pub allow: Vec<String>,
     /// Tags.
@@ -778,6 +837,9 @@ impl Task {
             actual_start: None,
             actual_finish: None,
             remaining: None,
+            physical_pct: None,
+            ev_method: None,
+            actual_cost: None,
             allow: Vec::new(),
             tags: Vec::new(),
             custom: BTreeMap::new(),
@@ -789,7 +851,10 @@ impl Task {
 impl Task {
     /// True when any progress is recorded on the task.
     pub fn has_progress(&self) -> bool {
-        self.actual_start.is_some() || self.actual_finish.is_some() || self.remaining.is_some()
+        self.actual_start.is_some()
+            || self.actual_finish.is_some()
+            || self.remaining.is_some()
+            || self.physical_pct.is_some()
     }
 }
 

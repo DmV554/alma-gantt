@@ -17,6 +17,7 @@ use rust_decimal::prelude::ToPrimitive;
 
 use crate::cpm::{Calendars, PlanIndex, Schedule, resolve_duration};
 use crate::{finance, resources};
+use alma_core::model::Snapshot;
 
 /// A lint rule.
 #[derive(Debug, Clone, Copy)]
@@ -43,6 +44,11 @@ use Severity::{Error as E, Info as I, Warn as W};
 pub const RULES: &[Rule] = &[
     rule("L-BAS-01", Some(W), "Progress recorded but no baseline"),
     rule("L-BAS-02", Some(E), "Progress recorded but no status date"),
+    rule(
+        "L-BAS-03",
+        Some(W),
+        "Milestone or project finish later than the baseline by more than finish_slip",
+    ),
     rule(
         "L-BAS-04",
         Some(E),
@@ -115,6 +121,32 @@ pub const RULES: &[Rule] = &[
         Some(I),
         "Duration outside the three-point range",
     ),
+    rule(
+        "L-EVM-01",
+        Some(W),
+        "Cost or schedule variance beyond the control threshold at the status date",
+    ),
+    rule(
+        "L-EVM-02",
+        Some(E),
+        "Progress on a task with no budget in the baseline",
+    ),
+    rule(
+        "L-EVM-03",
+        Some(W),
+        "Actual cost without progress, or earned value without any actual cost",
+    ),
+    rule(
+        "L-EVM-04",
+        Some(E),
+        "Earned value needs a status date and a format 1 baseline",
+    ),
+    rule(
+        "L-EVM-05",
+        Some(W),
+        "To-complete performance index above tcpi_max",
+    ),
+    rule("L-EVM-08", Some(I), "Long task measured with 0/100"),
     rule(
         "L-RES-01",
         Some(W),
@@ -285,6 +317,232 @@ impl Linter<'_> {
             _ => default,
         }
     }
+
+    fn param_number(&self, key: &str, default: i64) -> Decimal {
+        match self.plan.rules.params.get(key) {
+            Some(ParamValue::Number(n)) => *n,
+            _ => Decimal::from(default),
+        }
+    }
+
+    fn hint_last(&mut self, before: usize, hint: &str) {
+        if self.out.len() > before
+            && let Some((_, d)) = self.out.last_mut()
+        {
+            *d = d.clone().with_hint(hint.to_string());
+        }
+    }
+
+    fn finish(self) -> Vec<Diagnostic> {
+        let mut out = self.out;
+        out.sort_by(|(a, x), (b, y)| a.cmp(b).then(x.code.cmp(y.code)));
+        // Plan-level findings (index usize::MAX) go first.
+        out.sort_by_key(|(i, _)| *i != usize::MAX);
+        out.into_iter().map(|(_, d)| d).collect()
+    }
+}
+
+/// Rules that measure the plan against its active baseline (ADR 0019): `L-BAS-03` and the
+/// earned value rules. `snap` is the active baseline's snapshot.
+pub fn lint_baseline(plan: &Plan, schedule: &Schedule, snap: &Snapshot) -> Vec<Diagnostic> {
+    let mut l = Linter {
+        plan,
+        index: PlanIndex::new(plan),
+        out: Vec::new(),
+    };
+    let units = plan.settings.units;
+    let day = units.minutes_per_day;
+    let cals = Calendars::new(plan);
+
+    // L-BAS-03: milestones and the project finish against the baseline.
+    let slip = l.param_minutes("finish_slip", 5 * day);
+    let base: std::collections::HashMap<&str, &alma_core::model::SnapTask> =
+        snap.tasks.iter().map(|t| (t.id.as_str(), t)).collect();
+    let late_by = |cal: &crate::WorkCalendar, from: i64, to: i64| {
+        if to > from { cal.between(from, to) } else { 0 }
+    };
+    let project_slip = late_by(cals.project(), snap.finish, schedule.finish);
+    if project_slip > slip {
+        let before = l.out.len();
+        l.report(
+            usize::MAX,
+            "L-BAS-03",
+            W,
+            format!(
+                "the project finishes {} working days after baseline `{}` ({} instead of {})",
+                fmt_days(project_slip, day),
+                snap.baseline,
+                finish_date(schedule.finish),
+                finish_date(snap.finish)
+            ),
+            vec![snap.baseline.clone()],
+        );
+        l.hint_last(
+            before,
+            "recover the critical path (`alma critical`, `alma explain ID`), or revise the baseline through change control",
+        );
+    }
+    for (i, t) in plan.tasks.iter().enumerate() {
+        if t.kind != TaskKind::Milestone || l.index.is_summary(i) {
+            continue;
+        }
+        let Some(b) = base.get(t.id.as_str()) else {
+            continue;
+        };
+        let late = late_by(cals.of_task(plan, i), b.finish, schedule.tasks[i].ef);
+        if late > slip {
+            l.on(
+                i,
+                "L-BAS-03",
+                format!(
+                    "milestone `{}` is forecast {} working days after its baseline date ({} instead of {})",
+                    t.id,
+                    fmt_days(late, day),
+                    start_date(schedule.tasks[i].ef),
+                    start_date(b.finish)
+                ),
+            );
+        }
+    }
+
+    // Earned value at the status date.
+    let e = match crate::evm::evm(plan, schedule, snap) {
+        Ok(e) => e,
+        Err(_) => return l.finish(),
+    };
+    let tracked = plan
+        .tasks
+        .iter()
+        .any(|t| t.has_progress() || t.actual_cost.is_some());
+    if !tracked {
+        return l.finish();
+    }
+    // L-EVM-01: the project and every control account.
+    let cv_max = l.param_number("cv_threshold", 10);
+    let sv_max = l.param_number("sv_threshold", 10);
+    let hundred = Decimal::from(100);
+    let mut rows: Vec<(usize, crate::evm::Measures)> = vec![(usize::MAX, e.project)];
+    for (i, t) in plan.tasks.iter().enumerate() {
+        if t.wbs_role == Some(WbsRole::ControlAccount) {
+            rows.push((i, e.rows[i]));
+        }
+    }
+    for (i, m) in rows {
+        let x = m.indices();
+        let name = if i == usize::MAX {
+            "the project".to_string()
+        } else {
+            format!("control account `{}`", plan.tasks[i].id)
+        };
+        let mut over = Vec::new();
+        if let Some(cv) = x.cv_pct.filter(|v| *v * hundred < -cv_max) {
+            over.push(format!(
+                "cost variance {}% (CPI {})",
+                (cv * hundred).round_dp(1),
+                x.cpi.map_or("n/a".into(), |c| c.round_dp(2).to_string())
+            ));
+        }
+        if let Some(sv) = x.sv_pct.filter(|v| *v * hundred < -sv_max) {
+            over.push(format!(
+                "schedule variance {}% (SPI {})",
+                (sv * hundred).round_dp(1),
+                x.spi.map_or("n/a".into(), |c| c.round_dp(2).to_string())
+            ));
+        }
+        if over.is_empty() {
+            continue;
+        }
+        let ids = if i == usize::MAX {
+            Vec::new()
+        } else {
+            vec![plan.tasks[i].id.clone()]
+        };
+        let before = l.out.len();
+        l.report(
+            i,
+            "L-EVM-01",
+            W,
+            format!(
+                "{name} is beyond the control threshold at {}: {}",
+                e.status,
+                over.join(", ")
+            ),
+            ids,
+        );
+        l.hint_last(
+            before,
+            "find the cause with `alma evm` and `alma progress ls`; thresholds are rule parameters cv_threshold and sv_threshold (percent)",
+        );
+    }
+    // L-EVM-02 and L-EVM-03 per task.
+    let cost = crate::cost::costs(plan, schedule);
+    for (i, t) in plan.tasks.iter().enumerate() {
+        let d = &schedule.tasks[i];
+        if d.in_network
+            && d.progress.started()
+            && e.own[i].bac.is_zero()
+            && !cost.task_total[i].is_zero()
+        {
+            l.on(
+                i,
+                "L-EVM-02",
+                format!(
+                    "`{}` has progress but no budget in baseline `{}`: its work earns nothing",
+                    t.id, snap.baseline
+                ),
+            );
+        }
+        if d.in_network && !d.progress.started() && t.actual_cost.is_some_and(|c| !c.is_zero()) {
+            l.on(
+                i,
+                "L-EVM-03",
+                format!(
+                    "`{}` has actual cost but has not started: cost and progress are measured differently",
+                    t.id
+                ),
+            );
+        }
+    }
+    if e.project.ev > Decimal::ZERO && !plan.tasks.iter().any(|t| t.actual_cost.is_some()) {
+        let before = l.out.len();
+        l.report(
+            usize::MAX,
+            "L-EVM-03",
+            W,
+            format!(
+                "work worth {} has been earned but no actual cost is recorded, so CPI cannot be measured",
+                e.project.ev.round_dp(2)
+            ),
+            Vec::new(),
+        );
+        l.hint_last(
+            before,
+            "record what was spent: `alma progress set ID --cost 1200` on tasks or control accounts",
+        );
+    }
+    // L-EVM-05: recovery the plan assumes.
+    let tcpi_max = match plan.rules.params.get("tcpi_max") {
+        Some(ParamValue::Number(n)) => *n,
+        _ => Decimal::new(11, 1),
+    };
+    if let Some(t) = e.project.indices().tcpi_bac.filter(|t| *t > tcpi_max) {
+        let before = l.out.len();
+        l.report(
+            usize::MAX,
+            "L-EVM-05",
+            W,
+            format!(
+                "finishing within budget needs a cost efficiency of {} on the remaining work (TCPI), above {tcpi_max}",
+                t.round_dp(3)
+            ),
+            Vec::new(),
+        );
+        l.hint_last(
+            before,
+            "the budget assumes a recovery that is unlikely; forecast with the EAC from `alma evm` and raise it through change control",
+        );
+    }
+    l.finish()
 }
 
 /// Runs every rule. `schedule` is `None` when the plan could not be scheduled.
@@ -928,6 +1186,37 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
         }
     }
 
+    // L-EVM-08: a long task measured 0/100 earns nothing until it finishes.
+    if let Some(s) = schedule {
+        let period_days = match plan.settings.reporting_period {
+            Some(ReportingPeriod::Week) => units.days_per_week,
+            _ => units.days_per_week * 52 / 12,
+        };
+        for (i, t) in plan.tasks.iter().enumerate() {
+            if t.ev_method != Some(alma_core::model::EvMethod::Fixed { start: 0 })
+                || !s.tasks[i].in_network
+            {
+                continue;
+            }
+            let d = s.tasks[i].duration;
+            let days = if d.elapsed {
+                d.minutes / (24 * 60) * units.days_per_week / 7
+            } else {
+                d.minutes / day
+            };
+            if days > 2 * period_days {
+                l.on(
+                    i,
+                    "L-EVM-08",
+                    format!(
+                        "`{}` lasts {days} working days but earns nothing until it finishes (0/100); earned value will jump",
+                        t.id
+                    ),
+                );
+            }
+        }
+    }
+
     // Baselines (knowledge notes, scheduling §1.13 and §4.14).
     for b in &plan.baselines {
         if let (Some(parent), None) = (&b.parent, &b.change_ref) {
@@ -1190,11 +1479,7 @@ pub fn lint(plan: &Plan, schedule: Option<&Schedule>) -> Vec<Diagnostic> {
         }
     }
 
-    let mut out = l.out;
-    out.sort_by(|(a, x), (b, y)| a.cmp(b).then(x.code.cmp(y.code)));
-    // Plan-level findings (index usize::MAX) go first.
-    out.sort_by_key(|(i, _)| *i != usize::MAX);
-    out.into_iter().map(|(_, d)| d).collect()
+    l.finish()
 }
 
 fn fmt_hours(minutes: i64) -> String {

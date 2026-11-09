@@ -364,9 +364,23 @@ pub enum Op {
         /// Working time left at the status date (a duration such as `3d`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         remaining: Option<String>,
+        /// Physical percent complete, 0 to 100 (ADR 0019).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pct: Option<String>,
+        /// Actual cost so far, cumulative (a decimal string).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost: Option<String>,
         /// Remove the task's recorded progress first.
         #[serde(default)]
         clear: bool,
+    },
+    /// Set a lint rule parameter (`[rules.params]`), e.g. `cv_threshold` = `10`.
+    #[serde(rename = "rule.param")]
+    RuleParam {
+        /// Parameter name.
+        name: String,
+        /// Value: a number, or text such as a duration (`5d`).
+        value: String,
     },
     /// Set the status date: the day progress is measured through (`[project] status_date`).
     #[serde(rename = "progress.date")]
@@ -1063,6 +1077,12 @@ fn set_task_fields(
                 set_sub_field(table, id, "fixed_cost", "amount", v)?;
                 continue;
             }
+            "physical_pct" => match v {
+                FieldValue::Text(t) => number_item(id, key, t)?,
+                FieldValue::List(_) => {
+                    return Err(op_err("E-OPS-04", "physical_pct is a number", &[id]));
+                }
+            },
             _ => to_item(key, v),
         };
         insert_canonical(table, "task", key, item);
@@ -1865,13 +1885,21 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
             start,
             finish,
             remaining,
+            pct,
+            cost,
             clear,
         } => {
             let i = require_task(doc, id)?;
-            if !clear && start.is_none() && finish.is_none() && remaining.is_none() {
+            if !clear
+                && start.is_none()
+                && finish.is_none()
+                && remaining.is_none()
+                && pct.is_none()
+                && cost.is_none()
+            {
                 return Err(op_err(
                     "E-OPS-04",
-                    "nothing to record: give start, finish, remaining or clear",
+                    "nothing to record: give start, finish, remaining, pct, cost or clear",
                     &[id],
                 ));
             }
@@ -1880,9 +1908,14 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
                 ("actual_start", start),
                 ("actual_finish", finish),
                 ("remaining", remaining),
+                ("physical_pct", pct),
+                ("actual_cost", cost),
             ] {
                 if let Some(v) = v {
-                    if key != "remaining" && v.parse::<jiff::civil::Date>().is_err() {
+                    if key.starts_with("actual_")
+                        && key != "actual_cost"
+                        && v.parse::<jiff::civil::Date>().is_err()
+                    {
                         return Err(op_err(
                             "E-OPS-04",
                             format!("{key} `{v}` is not a date like 2027-03-01"),
@@ -1894,11 +1927,55 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
             }
             let table = tasks_mut(doc).get_mut(i).expect("index from require_task");
             if *clear {
-                for key in ["actual_start", "actual_finish", "remaining"] {
+                for key in [
+                    "actual_start",
+                    "actual_finish",
+                    "remaining",
+                    "physical_pct",
+                    "actual_cost",
+                ] {
                     table.remove(key);
                 }
             }
             set_task_fields(table, id, &fields)
+        }
+        Op::RuleParam { name, value: v } => {
+            let valid = !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if !valid {
+                return Err(op_err(
+                    "E-OPS-04",
+                    format!("parameter name `{name}` must be lowercase letters, digits and _"),
+                    &[],
+                ));
+            }
+            let item = match number_item(name, name, v) {
+                Ok(n) => n,
+                Err(_) => value(v.as_str()),
+            };
+            let created = doc.get("rules").is_none();
+            if created {
+                let mut rules = Table::new();
+                rules.set_implicit(true);
+                doc.insert("rules", Item::Table(rules));
+            }
+            let rules = doc["rules"]
+                .as_table_mut()
+                .ok_or_else(|| op_err("E-OPS-04", "`rules` is not a table", &[]))?;
+            let created = created || rules.get("params").is_none();
+            if rules.get("params").is_none() {
+                rules.insert("params", Item::Table(new_table()));
+            }
+            let params = rules["params"]
+                .as_table_mut()
+                .ok_or_else(|| op_err("E-OPS-04", "`rules.params` is not a table", &[]))?;
+            params.insert(name, item);
+            if created {
+                alma_format::place_tables(doc);
+            }
+            Ok(())
         }
         Op::ProgressDate { date } => {
             if date.parse::<jiff::civil::Date>().is_err() {

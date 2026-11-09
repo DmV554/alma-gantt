@@ -50,6 +50,10 @@ fields as `alma schema`). Every tool takes an optional `file`; mutations take `d
    days since the start. Started work stays at its actual dates; everything else is
    rescheduled after the status date. `alma progress ls` shows what is moving, what is late to
    start, and the forecast finish against the baseline.
+9. Measure earned value. Record how much of each started task is physically done
+   (`--pct 40`) and what was spent (`--cost 1200`, on tasks or on control accounts). Then run
+   `alma evm`. It reports PV, EV, AC, SPI, CPI, EAC and TCPI for the project and per WBS node,
+   and `alma check` warns when a variance crosses the control thresholds (`L-EVM-01`).
 
 For many changes at once, write the operations to a file and run `alma apply ops.json`
 (all or nothing). `alma schema` prints the JSON Schema of operations.
@@ -110,8 +114,11 @@ alma baseline save <id> [--name "..."] [--change CR-12] [--reason "..."] [--date
 alma baseline ls
 alma variance [--baseline b1] [--changed] [--limit N]   # dates and cost vs the baseline
 alma progress date 2027-03-31            # the status date: progress is measured through it
-alma progress set <id> [--start D] [--finish D] [--remaining 3d] [--clear]
+alma progress set <id> [--start D] [--finish D] [--remaining 3d] [--pct 40] [--cost 1200]
+               [--clear]
 alma progress ls [--all] [--baseline b1] # started, finished, late to start; forecast finish
+alma evm [--depth 2 | --accounts] [--baseline b1]   # earned value at the status date
+alma rule param cv_threshold 15          # control thresholds and other rule parameters
 alma diff [--rev HEAD | --against old.alma.toml]   # what moved since then
 alma keys [task|project|calendar|resource|cadence|task.deps|task.estimate ...]   # field reference
 alma schema
@@ -142,6 +149,12 @@ alma guide
   reached with `--finish D` alone. Work started out of sequence keeps waiting for its
   unfinished predecessors (`progress_logic = "retained_logic"`); `alma settings set
   progress_logic=progress_override` lets it run from the status date instead.
+- Earned value: a task earns its baseline budget as it progresses. `ev_method` sets how:
+  - `physical` (default): `physical_pct`, measured on the work, not on elapsed time;
+  - a fixed formula: `--field ev_method=0/100`, `50/50` or `20/80`.
+
+  Level-of-effort tasks earn as planned, and reserves are not earned. EVM needs a status date
+  and a baseline saved by this version: `alma baseline save` (snapshot format 1).
 - Contract dates: use `--deadline` on the milestone, not a hard constraint. A missed deadline
   shows as negative float (`L-SCH-05`) without moving the task.
 

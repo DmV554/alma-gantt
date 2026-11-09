@@ -4,6 +4,7 @@
 pub mod baseline;
 pub mod cost;
 pub mod diff;
+pub mod evm;
 pub mod export;
 pub mod files;
 pub mod finance;
@@ -79,6 +80,19 @@ pub fn load(src: &str) -> Loaded {
         schedule,
         diagnostics,
     }
+}
+
+/// Like [`load`] for the plan at `path`: adds the rules that measure the plan against its
+/// active baseline (`L-BAS-03`, `L-EVM-*`; ADR 0019) when its snapshot can be read.
+pub fn load_file(path: &std::path::Path, src: &str) -> Loaded {
+    let mut l = load(src);
+    if let (Some(plan), Some(schedule)) = (&l.plan, &l.schedule)
+        && let Ok(Some(snap)) = baseline::snapshot_for(plan, path, None)
+    {
+        l.diagnostics
+            .extend(alma_sched::lint_baseline(plan, schedule, &snap));
+    }
+    l
 }
 
 /// Counts of diagnostics by severity.

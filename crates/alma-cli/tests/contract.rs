@@ -1244,3 +1244,157 @@ fn progress_status_date_and_report() {
     assert_eq!(code, 0, "{v}");
     assert!(!p.text().contains("remaining ="));
 }
+
+#[test]
+fn earned_value_from_the_cli() {
+    let p = Plan::new("evm");
+    // Without a baseline, or without a status date, EVM is L-EVM-04 with a hint.
+    let (code, v) = p.json(&["evm"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("L-EVM-04")),
+        "{v}"
+    );
+    let (code, _) = p.json(&["baseline", "save", "b1", "--date", "2027-01-04"]);
+    assert_eq!(code, 0);
+    let (code, v) = p.json(&["evm"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("L-EVM-04")),
+        "{v}"
+    );
+    assert!(
+        v["errors"][0]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("progress date")
+    );
+
+    let (code, _) = p.json(&["progress", "date", "2027-03-31"]);
+    assert_eq!(code, 0);
+    for args in [
+        &["kickoff", "--finish", "2027-01-04"][..],
+        &[
+            "discovery",
+            "--start",
+            "2027-01-04",
+            "--finish",
+            "2027-02-17",
+            "--cost",
+            "300",
+        ],
+        &["decision-gate", "--finish", "2027-02-17"],
+        &[
+            "platform-env",
+            "--start",
+            "2027-02-18",
+            "--finish",
+            "2027-03-05",
+            "--cost",
+            "160",
+        ],
+        &[
+            "platform-cicd",
+            "--start",
+            "2027-03-08",
+            "--pct",
+            "60",
+            "--cost",
+            "70",
+        ],
+    ] {
+        let mut a = vec!["progress", "set"];
+        a.extend_from_slice(args);
+        let (code, v) = p.json(&a);
+        assert_eq!(code, 0, "{args:?}: {v}");
+    }
+    let text = p.text();
+    assert!(
+        text.contains("physical_pct = 60\nactual_cost = \"70\"\n"),
+        "{text}"
+    );
+    let (code, _) = p.json(&["fmt", "--check"]);
+    assert_eq!(code, 0);
+
+    let (code, v) = p.json(&["evm", "--depth", "2"]);
+    assert_eq!(code, 0, "{v}");
+    let pr = &v["project"];
+    assert_eq!(
+        (
+            pr["bac"].as_f64(),
+            pr["pv"].as_f64(),
+            pr["ev"].as_f64(),
+            pr["ac"].as_f64()
+        ),
+        (Some(4714.5), Some(2392.9), Some(541.2), Some(530.0))
+    );
+    assert_eq!(pr["cpi"], 1.021);
+    assert!(v["forecasts"]["eac_cpi"].is_number());
+    let row = |id: &str| {
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    // 60 % of a budget of 42 is 25.2.
+    assert_eq!(row("platform-cicd")["ev"], 25.2);
+    assert_eq!(row("discovery")["cpi"], 1.44);
+    let (_, v) = p.json(&["evm", "--accounts", "--limit", "1"]);
+    assert_eq!(v["rows"].as_array().unwrap().len(), 1);
+    assert!(v["next_cursor"].is_string());
+
+    // Thresholds are rule parameters; check reports what crosses them.
+    let (_, v) = p.json(&["check"]);
+    assert!(v.to_string().contains("L-EVM-01"), "{v}");
+    let before = p.text();
+    let (code, v) = p.json(&["rule", "param", "sv_threshold", "90", "--dry-run"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(p.text(), before);
+    let (code, v) = p.json(&["rule", "param", "sv_threshold", "90"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(
+        p.text().contains("[rules.params]\nsv_threshold = 90\n"),
+        "{}",
+        p.text()
+    );
+    let (code, v) = p.json(&["rule", "param", "Bad-Name", "1"]);
+    assert_eq!(
+        (code, v["errors"][0]["code"].as_str()),
+        (1, Some("E-OPS-04"))
+    );
+
+    // Bad values are refused and leave the file alone.
+    let before = p.text();
+    for (args, code) in [
+        (&["platform-cicd", "--pct", "140"][..], "E-FMT-03"),
+        (&["platform-cicd", "--pct", "lots"], "E-OPS-04"),
+        (&["platform-cicd", "--cost=-5"], "E-FMT-03"),
+        (&["gate-sw", "--pct", "10"], "E-FMT-03"),
+    ] {
+        let mut a = vec!["progress", "set"];
+        a.extend_from_slice(args);
+        let (exit, v) = p.json(&a);
+        assert_eq!(
+            (exit, v["errors"][0]["code"].as_str()),
+            (1, Some(code)),
+            "{args:?}: {v}"
+        );
+        assert_eq!(p.text(), before, "{args:?}");
+    }
+    // ev_method is a task key.
+    let (code, v) = p.json(&["task", "set", "platform-cicd", "--field", "ev_method=50/50"]);
+    assert_eq!(code, 0, "{v}");
+    let (_, v) = p.json(&["evm", "--depth", "2"]);
+    assert_eq!(
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "platform-cicd")
+            .unwrap()["ev"],
+        21.0
+    );
+}

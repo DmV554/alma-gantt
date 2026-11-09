@@ -196,6 +196,21 @@ enum Cmd {
     /// Progress: actual dates and remaining work at the status date (ADR 0018).
     #[command(subcommand)]
     Progress(ProgressCmd),
+    /// Earned value at the status date: PV, EV, AC, variances, SPI, CPI, EAC and TCPI for the
+    /// project and per WBS node (ADR 0019).
+    Evm {
+        /// Baseline id (default: the active one).
+        #[arg(long)]
+        baseline: Option<String>,
+        /// WBS levels to list (default 1).
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        /// List control accounts instead of WBS levels.
+        #[arg(long)]
+        accounts: bool,
+        #[command(flatten)]
+        page: PageArgs,
+    },
     /// How the current schedule differs from a baseline: dates and cost per task.
     Variance {
         /// Baseline id (default: the active one).
@@ -581,6 +596,12 @@ enum ProgressCmd {
         /// working time since the start).
         #[arg(long)]
         remaining: Option<String>,
+        /// Physical percent complete, 0 to 100, measured on the work (earned value).
+        #[arg(long)]
+        pct: Option<String>,
+        /// Actual cost so far, cumulative (also on summaries and control accounts).
+        #[arg(long)]
+        cost: Option<String>,
         /// Remove the task's recorded progress first (alone: remove it).
         #[arg(long)]
         clear: bool,
@@ -632,6 +653,16 @@ enum RuleCmd {
         code: String,
         /// off, info, warn or error.
         severity: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Set a lint rule parameter: cv_threshold and sv_threshold (percent, default 10),
+    /// tcpi_max (default 1.1), finish_slip (duration, default 5d), max_lag, emv_tolerance.
+    Param {
+        /// Parameter name.
+        name: String,
+        /// Value: a number, or a duration like 5d.
+        value: String,
         #[command(flatten)]
         m: MutArgs,
     },
@@ -835,6 +866,16 @@ enum MinSeverity {
 /// A command failure that is not about the plan (exit code 2).
 struct Usage(String);
 
+/// Reports errors about the plan (exit code 1).
+fn report_errors(errors: &[Diagnostic], json: bool) -> ExitCode {
+    if json {
+        print_json(&serde_json::json!({ "ok": false, "errors": errors }));
+    } else {
+        errors.iter().for_each(print_diag);
+    }
+    ExitCode::from(1)
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let json = cli.json;
@@ -884,7 +925,8 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
     let loaded = |file: Option<PathBuf>| -> Result<(PathBuf, alma_ops::Loaded), Usage> {
         let path = resolve_file(file)?;
         let src = read(&path)?;
-        Ok((path, alma_ops::load(&src)))
+        let l = alma_ops::load_file(&path, &src);
+        Ok((path, l))
     };
     // Queries need a schedulable plan; report its errors otherwise.
     let scheduled = |l: &alma_ops::Loaded| -> Option<ExitCode> {
@@ -1556,6 +1598,8 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                     start,
                     finish,
                     remaining,
+                    pct,
+                    cost,
                     clear,
                     m,
                 } => (
@@ -1564,6 +1608,8 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                         start,
                         finish,
                         remaining,
+                        pct,
+                        cost,
                         clear,
                     },
                     m,
@@ -1572,6 +1618,93 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 ProgressCmd::Ls { .. } => unreachable!("handled above"),
             };
             mutation(file, &[op], m.dry_run, json)
+        }
+        Cmd::Evm {
+            baseline,
+            depth,
+            accounts,
+            page,
+        } => {
+            let (path, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let plan = l.plan.as_ref().unwrap();
+            let snap = match alma_ops::baseline::snapshot_for(plan, &path, baseline.as_deref()) {
+                Ok(Some(s)) => s,
+                Ok(None) => {
+                    let d = Diagnostic::error(
+                        "L-EVM-04",
+                        "earned value is measured against a baseline, and the plan has none",
+                    )
+                    .with_hint("save one: `alma baseline save b1`");
+                    return Ok(report_errors(&[d], json));
+                }
+                Err(m) => return Err(Usage(m)),
+            };
+            let which = if accounts {
+                alma_ops::evm::Rows::Accounts
+            } else {
+                alma_ops::evm::Rows::Depth(depth)
+            };
+            let r = match alma_ops::evm::report(
+                plan,
+                l.schedule.as_ref().unwrap(),
+                &snap,
+                which,
+                Page::new(page.limit, page.cursor.as_deref()),
+            ) {
+                Ok(r) => r,
+                Err(d) => return Ok(report_errors(&[d], json)),
+            };
+            if json {
+                print_json(&r);
+            } else {
+                let cur = r.currency.as_deref().unwrap_or("");
+                let opt = |x: Option<f64>| x.map_or("n/a".to_string(), |v| v.to_string());
+                let p = &r.project;
+                println!(
+                    "at {} against {}: BAC {:.2} {cur}, PV {:.2}, EV {:.2}, AC {:.2}",
+                    r.status_date, r.baseline, p.bac, p.pv, p.ev, p.ac
+                );
+                println!(
+                    "  SV {:.2} ({}%), CV {:.2} ({}%), SPI {}, CPI {}, complete {}%",
+                    p.sv,
+                    opt(p.sv_pct),
+                    p.cv,
+                    opt(p.cv_pct),
+                    opt(p.spi),
+                    opt(p.cpi),
+                    opt(p.complete_pct)
+                );
+                let f = &r.forecasts;
+                println!(
+                    "  EAC {} (CPI), {} (CPI×SPI), {:.2} (budget rate); TCPI {}",
+                    opt(f.eac_cpi),
+                    opt(f.eac_cpi_spi),
+                    f.eac_budget_rate,
+                    opt(p.tcpi)
+                );
+                for row in &r.rows {
+                    println!(
+                        "  {} {}\tPV {:.2}\tEV {:.2}\tAC {:.2}\tSPI {}\tCPI {}",
+                        row.wbs.as_deref().unwrap_or(""),
+                        row.id.as_deref().unwrap_or(""),
+                        row.pv,
+                        row.ev,
+                        row.ac,
+                        opt(row.spi),
+                        opt(row.cpi)
+                    );
+                }
+                if !r.removed.is_empty() {
+                    println!("  removed since the baseline: {}", r.removed.join(", "));
+                }
+                if let Some(c) = &r.next_cursor {
+                    println!("more: --cursor {c}");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
         }
         Cmd::Variance {
             baseline,
@@ -1997,6 +2130,9 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
         }
         Cmd::Rule(RuleCmd::Set { code, severity, m }) => {
             mutation(file, &[Op::RuleSet { code, severity }], m.dry_run, json)
+        }
+        Cmd::Rule(RuleCmd::Param { name, value, m }) => {
+            mutation(file, &[Op::RuleParam { name, value }], m.dry_run, json)
         }
         Cmd::Keys { table } => {
             let tables: Vec<&str> = {

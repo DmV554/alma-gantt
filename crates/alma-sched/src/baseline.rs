@@ -18,6 +18,20 @@ use crate::cpm::{Calendars, Schedule};
 /// Freezes a scheduled plan as baseline `id`.
 pub fn snapshot(id: &str, plan: &Plan, schedule: &Schedule) -> Snapshot {
     let c = costs(plan, schedule);
+    let cals = Calendars::new(plan);
+    // Each task's own budget: its assignments and fixed cost; reserves are not earned
+    // (ADR 0019).
+    let mut own: Vec<Vec<&crate::cost::CostLine>> = vec![Vec::new(); plan.tasks.len()];
+    for line in &c.lines {
+        if line.task < plan.tasks.len()
+            && matches!(
+                line.source,
+                crate::cost::Source::Resource(_) | crate::cost::Source::Fixed
+            )
+        {
+            own[line.task].push(line);
+        }
+    }
     Snapshot {
         baseline: id.into(),
         start: schedule.start,
@@ -28,29 +42,41 @@ pub fn snapshot(id: &str, plan: &Plan, schedule: &Schedule) -> Snapshot {
             .iter()
             .zip(&schedule.tasks)
             .zip(&c.task_total)
-            .map(|((t, d), cost)| SnapTask {
+            .zip(&own)
+            .map(|(((t, d), cost), lines)| SnapTask {
                 id: t.id.clone(),
                 start: d.es,
                 finish: d.ef,
                 cost: *cost,
+                budget: lines.iter().map(|l| l.amount).sum(),
+                pv: daily_of(plan, &cals, lines.iter().copied()),
             })
             .collect(),
         pv: daily(plan, &c),
+        per_task: true,
     }
 }
 
 /// Daily cumulative cost, only on days where it changes.
 pub fn daily(plan: &Plan, c: &Costs) -> Vec<(Date, Decimal)> {
-    let cals = Calendars::new(plan);
+    daily_of(plan, &Calendars::new(plan), c.lines.iter())
+}
+
+/// Daily cumulative cost of some cost lines, only on days where it changes.
+fn daily_of<'a>(
+    plan: &Plan,
+    cals: &Calendars,
+    lines: impl Iterator<Item = &'a crate::cost::CostLine>,
+) -> Vec<(Date, Decimal)> {
     let mut per_day: HashMap<i64, Decimal> = HashMap::new();
-    for line in &c.lines {
+    for line in lines {
         let (from, to) = match line.accrual {
             crate::cost::Accrual::At(t) => (t, t + 1),
             crate::cost::Accrual::Spread { from, to, .. } => (from, to),
         };
         for day in day_of(from)..=day_of((to - 1).max(from)) {
             let a = day * DAY;
-            let part = share(plan, &cals, line, a, a + DAY);
+            let part = share(plan, cals, line, a, a + DAY);
             if !part.is_zero() {
                 *per_day.entry(day).or_default() += part;
             }

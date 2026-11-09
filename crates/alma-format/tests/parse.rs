@@ -517,3 +517,28 @@ fn e_fmt_03_progress_fields_agree() {
         ["E-FMT-03"]
     );
 }
+
+#[test]
+fn e_fmt_03_earned_value_fields() {
+    let t = |extra: &str| format!("[[task]]\nid = \"a\"\nname = \"A\"\nduration = \"5d\"\n{extra}");
+    assert!(codes(&t("actual_start = 2027-01-04\nphysical_pct = 40\nev_method = \"physical\"\nactual_cost = \"120.5\"\n")).is_empty());
+    assert!(codes(&t("ev_method = \"20/80\"\nactual_cost = \"0\"\n")).is_empty());
+    for bad in [
+        "actual_start = 2027-01-04\nphysical_pct = 140\n",
+        "physical_pct = 10\n",
+        "actual_start = 2027-01-04\nactual_finish = 2027-01-08\nphysical_pct = 90\n",
+        "ev_method = \"30/60\"\n",
+        "actual_cost = 12.5\n",
+        "actual_cost = \"-1\"\n",
+    ] {
+        assert_eq!(codes(&t(bad)), ["E-FMT-03"], "{bad}");
+    }
+    // Actual cost may be recorded on a summary (a control account).
+    assert!(
+        codes(
+            "[[task]]\nid = \"s\"\nname = \"S\"\nactual_cost = \"10\"\n\
+         [[task]]\nid = \"a\"\nparent = \"s\"\nname = \"A\"\nduration = \"1d\"\n"
+        )
+        .is_empty()
+    );
+}

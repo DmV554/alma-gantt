@@ -383,3 +383,41 @@ fn progress_tools() {
     let kick = rows.iter().find(|t| t["id"] == "kickoff").unwrap();
     assert_eq!(kick["late_start"], true);
 }
+
+#[test]
+fn earned_value_tool() {
+    let d = Dir::new("evm");
+    let s = d.server();
+    let r = s.call("evm", &args(json!({})));
+    assert!(r.is_error);
+    assert_eq!(r.json["errors"][0]["code"], "L-EVM-04");
+    let r = s.call(
+        "baseline_save",
+        &args(json!({ "id": "b1", "date": "2027-01-04" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("progress_date", &args(json!({ "date": "2027-03-31" })));
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call(
+        "progress_set",
+        &args(json!({ "id": "discovery", "start": "2027-01-04", "finish": "2027-02-17", "cost": "300" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call(
+        "progress_set",
+        &args(json!({ "id": "platform-env", "start": "2027-02-18", "pct": "50" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("evm", &args(json!({ "depth": 2 })));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["project"]["ev"], 474.0);
+    assert_eq!(r.json["project"]["ac"], 300.0);
+    let r = s.call(
+        "rule_param",
+        &args(json!({ "name": "tcpi_max", "value": "2" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert!(d.text().contains("tcpi_max = 2"));
+    let r = s.call("check", &args(json!({ "min": "warn" })));
+    assert!(r.json.to_string().contains("L-EVM-01"), "{}", r.json);
+}

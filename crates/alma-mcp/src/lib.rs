@@ -187,6 +187,9 @@ fn op_description(op: &str) -> &'static str {
         "cal.add" => "Add a working calendar (workdays, hours like 09:00-13:00).",
         "cal.except" => "Add a holiday or blackout period to a calendar (dates inclusive).",
         "rule.set" => "Set a lint rule's severity for this plan (off, info, warn, error).",
+        "rule.param" => {
+            "Set a lint rule parameter: cv_threshold and sv_threshold (percent, default 10), tcpi_max (default 1.1), finish_slip (duration, default 5d), max_lag, emv_tolerance."
+        }
         "reserve.add" => {
             "Add a cost reserve: kind `contingency` (identified risks; inside the cost baseline, accrues at the finish of its scope) or `management` (the unforeseen; outside the baseline, inside the budget). Give a `basis`."
         }
@@ -204,7 +207,7 @@ fn op_description(op: &str) -> &'static str {
             "Resolve resource over-allocation: mode `leveling` delays tasks until their resources fit (the finish may move), `smoothing` only within free float, `off` turns it off. Saved in the plan; the result lists delayed tasks and what each waits for."
         }
         "progress.set" => {
-            "Record progress on a leaf task (ADR 0018): `start` and `finish` are the actual days, `remaining` the work left at the status date (default: duration minus the working time since the start). Started tasks stay at their actual dates; `clear` removes recorded progress first."
+            "Record progress on a leaf task (ADR 0018): `start` and `finish` are the actual days, `remaining` the work left at the status date (default: duration minus the working time since the start), `pct` the physical percent complete (0-100) that earns value, `cost` the actual cost so far (cumulative; also on summaries and control accounts). Started tasks stay at their actual dates; `clear` removes recorded progress first."
         }
         "progress.date" => {
             "Set the status date. Work not started, and the remaining work of tasks in progress, is scheduled after it."
@@ -323,6 +326,20 @@ pub fn tools() -> Vec<Tool> {
                 json!({
                     "baseline": { "type": "string", "description": "Default: the active one" },
                     "changed": { "type": "boolean", "description": "Only tasks that moved, changed cost or are new" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "cursor": { "type": "string" },
+                }),
+                &[],
+            ),
+        )),
+        read_only(Tool::new(
+            "evm",
+            "Earned value at the status date against a baseline: PV, EV, AC, SV, CV, SPI, CPI, EAC (three statistical forecasts), ETC, VAC and TCPI for the project and per WBS node. Needs a status date and progress (`progress_set`, with `pct` and `cost`).",
+            schema(
+                json!({
+                    "baseline": { "type": "string", "description": "Default: the active one" },
+                    "depth": { "type": "integer", "minimum": 1, "description": "WBS levels to list (default 1)" },
+                    "accounts": { "type": "boolean", "description": "List control accounts instead" },
                     "limit": { "type": "integer", "minimum": 1 },
                     "cursor": { "type": "string" },
                 }),
@@ -484,7 +501,8 @@ impl AlmaServer {
     fn load(&self, args: &JsonObject) -> Result<(PathBuf, alma_ops::Loaded), Outcome> {
         let path = self.plan_path(args)?;
         let src = alma_ops::files::read_text(&path).map_err(|m| Outcome::error("E-CLI-01", m))?;
-        Ok((path, alma_ops::load(&src)))
+        let l = alma_ops::load_file(&path, &src);
+        Ok((path, l))
     }
 
     /// Like `load`, but fails with the plan's errors when it cannot be scheduled.
@@ -713,6 +731,34 @@ impl AlmaServer {
                     &alma_ops::baseline::variance(plan, s, &snap, bool_arg(args, "changed"), page),
                     false,
                 )
+            }
+            "evm" => {
+                let (path, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let snap = alma_ops::baseline::snapshot_for(plan, &path, str_arg(args, "baseline"))
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?
+                    .ok_or_else(|| {
+                        Outcome::error(
+                            "L-EVM-04",
+                            "earned value is measured against a baseline, and the plan has none; save one with baseline_save",
+                        )
+                    })?;
+                let which = if bool_arg(args, "accounts") {
+                    alma_ops::evm::Rows::Accounts
+                } else {
+                    alma_ops::evm::Rows::Depth(usize_arg(args, "depth").unwrap_or(1))
+                };
+                let page = Page::new(usize_arg(args, "limit"), str_arg(args, "cursor"));
+                match alma_ops::evm::report(plan, s, &snap, which, page) {
+                    Ok(r) => Outcome::from(&r, false),
+                    Err(d) => {
+                        return Err(Outcome {
+                            json: json!({ "ok": false, "errors": [d] }),
+                            is_error: true,
+                            png: None,
+                        });
+                    }
+                }
             }
             "progress" => {
                 let (path, l) = self.scheduled(args)?;
