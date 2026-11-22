@@ -341,3 +341,128 @@ fn concurrent_writes_do_not_interleave() {
         );
     }
 }
+
+#[test]
+fn progress_tools() {
+    let d = Dir::new("progress");
+    let s = d.server();
+    let r = s.call(
+        "baseline_save",
+        &args(json!({ "id": "b1", "date": "2027-01-04" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("progress_date", &args(json!({ "date": "2027-02-26" })));
+    assert!(!r.is_error, "{}", r.json);
+    let before = d.text();
+    let r = s.call(
+        "progress_set",
+        &args(
+            json!({ "id": "discovery", "start": "2027-01-04", "remaining": "2d", "dry_run": true }),
+        ),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(d.text(), before);
+    let r = s.call(
+        "progress_set",
+        &args(json!({ "id": "discovery", "start": "2027-01-04", "remaining": "2d" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call(
+        "progress_set",
+        &args(json!({ "id": "mgmt", "start": "2027-01-04" })),
+    );
+    assert!(r.is_error);
+    assert_eq!(r.json["errors"][0]["code"], "E-FMT-03");
+    let r = s.call("progress", &args(json!({})));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["counts"]["in_progress"], 1);
+    let rows = r.json["tasks"].as_array().unwrap();
+    let disc = rows.iter().find(|t| t["id"] == "discovery").unwrap();
+    assert_eq!(disc["remaining"], "2d");
+    // The kickoff milestone was due on the first day and is not marked as reached.
+    let kick = rows.iter().find(|t| t["id"] == "kickoff").unwrap();
+    assert_eq!(kick["late_start"], true);
+}
+
+#[test]
+fn earned_value_tool() {
+    let d = Dir::new("evm");
+    let s = d.server();
+    let r = s.call("evm", &args(json!({})));
+    assert!(r.is_error);
+    assert_eq!(r.json["errors"][0]["code"], "L-EVM-04");
+    let r = s.call(
+        "baseline_save",
+        &args(json!({ "id": "b1", "date": "2027-01-04" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("progress_date", &args(json!({ "date": "2027-03-31" })));
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call(
+        "progress_set",
+        &args(json!({ "id": "discovery", "start": "2027-01-04", "finish": "2027-02-17", "cost": "300" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call(
+        "progress_set",
+        &args(json!({ "id": "platform-env", "start": "2027-02-18", "pct": "50" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("evm", &args(json!({ "depth": 2 })));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["project"]["ev"], 474.0);
+    assert_eq!(r.json["project"]["ac"], 300.0);
+    let r = s.call(
+        "baseline_revise",
+        &args(json!({ "id": "b2", "change_ref": "CR-1", "date": "2027-03-31" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("evm", &args(json!({})));
+    assert_eq!(r.json["baseline"], "b2");
+    assert_eq!(r.json["project"]["ev"], 474.0);
+    let r = s.call(
+        "rule_param",
+        &args(json!({ "name": "tcpi_max", "value": "2" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert!(d.text().contains("tcpi_max = 2"));
+    let r = s.call("check", &args(json!({ "min": "warn" })));
+    assert!(r.json.to_string().contains("L-EVM-01"), "{}", r.json);
+}
+
+#[test]
+fn iteration_tools() {
+    let d = Dir::new("agile");
+    let s = d.server();
+    let r = s.call(
+        "cadence_set",
+        &args(json!({ "id": "sprints", "fields": { "capacity": "21" } })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert!(d.text().contains("capacity = 21"));
+    let r = s.call(
+        "task_add",
+        &args(json!({ "id": "stories", "name": "Stories", "parent": "gate" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call(
+        "task_add",
+        &args(json!({ "id": "st1", "name": "Story", "parent": "stories",
+            "fields": { "kind": "story", "iteration": "s02", "points": "5" } })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("iterations", &args(json!({})));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["cadences"][0]["iterations"][1]["committed"], 5.0);
+    assert_eq!(r.json["cadences"][0]["iterations"][1]["capacity"], 21.0);
+    let r = s.call("iterations", &args(json!({ "cadence": "nope" })));
+    assert!(r.is_error);
+    let r = s.call(
+        "render",
+        &args(json!({ "chart": "burndown", "iteration": "s02", "format": "svg" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("render", &args(json!({ "chart": "burnup" })));
+    assert!(!r.is_error, "{}", r.json);
+    assert!(r.png.is_some());
+}

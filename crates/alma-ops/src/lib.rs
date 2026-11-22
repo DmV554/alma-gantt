@@ -1,13 +1,16 @@
 //! Command layer shared by the CLI, the MCP server and the GUI: typed commands, validation,
 //! atomic transactions, operation log and JSON schemas (SPEC.md §8a, §9).
 
+pub mod agile;
 pub mod baseline;
 pub mod cost;
 pub mod diff;
+pub mod evm;
 pub mod export;
 pub mod files;
 pub mod finance;
 pub mod mutate;
+pub mod progress;
 pub mod query;
 pub mod resources;
 pub mod schema;
@@ -78,6 +81,29 @@ pub fn load(src: &str) -> Loaded {
         schedule,
         diagnostics,
     }
+}
+
+/// Like [`load`] for the plan at `path`: adds the rules that measure the plan against its
+/// active baseline (`L-BAS-03`, `L-EVM-*`; ADR 0019) when its snapshot can be read.
+pub fn load_file(path: &std::path::Path, src: &str) -> Loaded {
+    let mut l = load(src);
+    if let (Some(plan), Some(schedule)) = (&l.plan, &l.schedule)
+        && let Ok(Some(snap)) = baseline::snapshot_for(plan, path, None)
+    {
+        let parent = plan
+            .baselines
+            .iter()
+            .find(|b| b.id == snap.baseline)
+            .and_then(|b| b.parent.as_deref())
+            .and_then(|p| baseline::read_snapshot(path, p).ok());
+        l.diagnostics.extend(alma_sched::lint_baseline(
+            plan,
+            schedule,
+            &snap,
+            parent.as_ref(),
+        ));
+    }
+    l
 }
 
 /// Counts of diagnostics by severity.

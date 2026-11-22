@@ -198,6 +198,21 @@ pub enum Op {
         /// Calendar id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         calendar: Option<String>,
+        /// Points the team can take on per iteration.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capacity: Option<String>,
+    },
+    /// Set or unset keys of a cadence (capacity, count, name, …).
+    #[serde(rename = "cadence.set")]
+    CadenceSet {
+        /// Id.
+        id: String,
+        /// Keys to set.
+        #[serde(default)]
+        fields: BTreeMap<String, FieldValue>,
+        /// Keys to remove.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unset: Vec<String>,
     },
     /// Remove a cadence.
     #[serde(rename = "cadence.rm")]
@@ -350,6 +365,44 @@ pub enum Op {
         /// Id.
         id: String,
     },
+    /// Record progress on a task (ADR 0018): actual dates and remaining work.
+    #[serde(rename = "progress.set")]
+    ProgressSet {
+        /// Task id.
+        id: String,
+        /// Day work started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start: Option<String>,
+        /// Day work finished.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finish: Option<String>,
+        /// Working time left at the status date (a duration such as `3d`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remaining: Option<String>,
+        /// Physical percent complete, 0 to 100 (ADR 0019).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pct: Option<String>,
+        /// Actual cost so far, cumulative (a decimal string).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost: Option<String>,
+        /// Remove the task's recorded progress first.
+        #[serde(default)]
+        clear: bool,
+    },
+    /// Set a lint rule parameter (`[rules.params]`), e.g. `cv_threshold` = `10`.
+    #[serde(rename = "rule.param")]
+    RuleParam {
+        /// Parameter name.
+        name: String,
+        /// Value: a number, or text such as a duration (`5d`).
+        value: String,
+    },
+    /// Set the status date: the day progress is measured through (`[project] status_date`).
+    #[serde(rename = "progress.date")]
+    ProgressDate {
+        /// The day, `YYYY-MM-DD`.
+        date: String,
+    },
     /// Set or unset scheduling settings (`[settings.schedule]`).
     #[serde(rename = "settings.set")]
     SettingsSet {
@@ -452,7 +505,7 @@ pub struct MutationReport {
 }
 
 impl MutationReport {
-    fn rejected(errors: Vec<Diagnostic>, dry_run: bool) -> Self {
+    pub(crate) fn rejected(errors: Vec<Diagnostic>, dry_run: bool) -> Self {
         Self {
             schema: OUTPUT_SCHEMA,
             ok: false,
@@ -839,6 +892,8 @@ pub struct BaselineMeta {
     pub reason: Option<String>,
     /// Approver.
     pub approved_by: Option<String>,
+    /// The baseline this one revises (default: the active one).
+    pub parent: Option<String>,
 }
 
 /// Adds a `[[baseline]]` table, makes it the only active one, and links it to the previously
@@ -878,6 +933,24 @@ pub(crate) fn add_baseline(doc: &mut DocumentMut, m: &BaselineMeta) -> Result<()
                 b.remove("active");
             }
         }
+        if let Some(p) = &m.parent {
+            if !aot
+                .iter()
+                .any(|b| b.get("id").and_then(Item::as_str) == Some(p.as_str()))
+            {
+                return Err(
+                    op_err("E-OPS-02", format!("no baseline `{p}`"), &[&m.id, p])
+                        .with_hint("list them with `alma baseline ls`"),
+                );
+            }
+            parent = Some(p.clone());
+        }
+    } else if let Some(p) = &m.parent {
+        return Err(op_err(
+            "E-OPS-02",
+            format!("no baseline `{p}`"),
+            &[&m.id, p],
+        ));
     }
     let mut t = new_table();
     t.insert("id", value(m.id.as_str()));
@@ -963,7 +1036,17 @@ fn setting_item(key: &str, v: &FieldValue) -> Item {
 }
 
 fn is_date_key(key: &str) -> bool {
-    matches!(key, "deadline" | "start" | "date" | "from" | "to")
+    matches!(
+        key,
+        "deadline"
+            | "start"
+            | "date"
+            | "from"
+            | "to"
+            | "status_date"
+            | "actual_start"
+            | "actual_finish"
+    )
 }
 
 /// Inserts `key` into `table` at its canonical position (registry order), keeping every other
@@ -1029,6 +1112,12 @@ fn set_task_fields(
                 set_sub_field(table, id, "fixed_cost", "amount", v)?;
                 continue;
             }
+            "physical_pct" | "points" => match v {
+                FieldValue::Text(t) => number_item(id, key, t)?,
+                FieldValue::List(_) => {
+                    return Err(op_err("E-OPS-04", format!("{key} is a number"), &[id]));
+                }
+            },
             _ => to_item(key, v),
         };
         insert_canonical(table, "task", key, item);
@@ -1480,6 +1569,7 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
             name,
             prefix,
             calendar,
+            capacity,
         } => {
             let date: toml_edit::Datetime = start.parse().map_err(|_| {
                 op_err(
@@ -1502,7 +1592,49 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
             if let Some(c) = calendar {
                 t.insert("calendar", value(c.as_str()));
             }
+            if let Some(c) = capacity {
+                t.insert("capacity", number_item(id, "capacity", c)?);
+            }
             push_top_table(doc, "cadence", id, t)
+        }
+        Op::CadenceSet { id, fields, unset } => {
+            for key in fields.keys().chain(unset.iter()) {
+                let required = ["id", "start", "length", "count"];
+                let bad = keys::lookup("cadence", key).is_none()
+                    || key == "id"
+                    || (unset.contains(key) && required.contains(&key.as_str()));
+                if bad {
+                    let known: Vec<&str> = keys::keys_of("cadence")
+                        .map(|k| k.key)
+                        .filter(|k| *k != "id")
+                        .collect();
+                    return Err(op_err(
+                        "E-FMT-02",
+                        format!("`{key}` cannot be set or removed on a cadence"),
+                        &[id],
+                    )
+                    .with_hint(format!(
+                        "a cadence takes: {} (start, length and count are required)",
+                        known.join(", ")
+                    )));
+                }
+            }
+            let mut items = Vec::new();
+            for (k, v) in fields {
+                let item = match (k.as_str(), v) {
+                    ("count" | "capacity", FieldValue::Text(x)) => number_item(id, k, x)?,
+                    _ => to_item(k, v),
+                };
+                items.push((k.as_str(), item));
+            }
+            let table = top_table_mut(doc, "cadence", id)?;
+            for k in unset {
+                table.remove(k);
+            }
+            for (k, item) in items {
+                insert_canonical(table, "cadence", k, item);
+            }
+            Ok(())
         }
         Op::CadenceRm { id } => {
             let aot = doc
@@ -1825,6 +1957,115 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
                 fields.insert("leveling".to_string(), FieldValue::Text(mode.to_string()));
             }
             apply_op(doc, &Op::SettingsSet { fields, unset })
+        }
+        Op::ProgressSet {
+            id,
+            start,
+            finish,
+            remaining,
+            pct,
+            cost,
+            clear,
+        } => {
+            let i = require_task(doc, id)?;
+            if !clear
+                && start.is_none()
+                && finish.is_none()
+                && remaining.is_none()
+                && pct.is_none()
+                && cost.is_none()
+            {
+                return Err(op_err(
+                    "E-OPS-04",
+                    "nothing to record: give start, finish, remaining, pct, cost or clear",
+                    &[id],
+                ));
+            }
+            let mut fields = BTreeMap::new();
+            for (key, v) in [
+                ("actual_start", start),
+                ("actual_finish", finish),
+                ("remaining", remaining),
+                ("physical_pct", pct),
+                ("actual_cost", cost),
+            ] {
+                if let Some(v) = v {
+                    if key.starts_with("actual_")
+                        && key != "actual_cost"
+                        && v.parse::<jiff::civil::Date>().is_err()
+                    {
+                        return Err(op_err(
+                            "E-OPS-04",
+                            format!("{key} `{v}` is not a date like 2027-03-01"),
+                            &[id],
+                        ));
+                    }
+                    fields.insert(key.to_string(), FieldValue::Text(v.clone()));
+                }
+            }
+            let table = tasks_mut(doc).get_mut(i).expect("index from require_task");
+            if *clear {
+                for key in [
+                    "actual_start",
+                    "actual_finish",
+                    "remaining",
+                    "physical_pct",
+                    "actual_cost",
+                ] {
+                    table.remove(key);
+                }
+            }
+            set_task_fields(table, id, &fields)
+        }
+        Op::RuleParam { name, value: v } => {
+            let valid = !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if !valid {
+                return Err(op_err(
+                    "E-OPS-04",
+                    format!("parameter name `{name}` must be lowercase letters, digits and _"),
+                    &[],
+                ));
+            }
+            let item = match number_item(name, name, v) {
+                Ok(n) => n,
+                Err(_) => value(v.as_str()),
+            };
+            let created = doc.get("rules").is_none();
+            if created {
+                let mut rules = Table::new();
+                rules.set_implicit(true);
+                doc.insert("rules", Item::Table(rules));
+            }
+            let rules = doc["rules"]
+                .as_table_mut()
+                .ok_or_else(|| op_err("E-OPS-04", "`rules` is not a table", &[]))?;
+            let created = created || rules.get("params").is_none();
+            if rules.get("params").is_none() {
+                rules.insert("params", Item::Table(new_table()));
+            }
+            let params = rules["params"]
+                .as_table_mut()
+                .ok_or_else(|| op_err("E-OPS-04", "`rules.params` is not a table", &[]))?;
+            params.insert(name, item);
+            if created {
+                alma_format::place_tables(doc);
+            }
+            Ok(())
+        }
+        Op::ProgressDate { date } => {
+            if date.parse::<jiff::civil::Date>().is_err() {
+                return Err(op_err(
+                    "E-OPS-04",
+                    format!("status date `{date}` is not a date like 2027-03-31"),
+                    &[],
+                ));
+            }
+            let mut fields = BTreeMap::new();
+            fields.insert("status_date".to_string(), FieldValue::Text(date.clone()));
+            apply_op(doc, &Op::ProjectSet { fields })
         }
         Op::SettingsSet { fields, unset } => {
             let allowed = |key: &str| matches!(keys::lookup("settings.schedule", key), Some(def) if !matches!(def.tier, keys::Tier::R(_)));

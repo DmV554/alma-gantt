@@ -179,12 +179,20 @@ fn op_description(op: &str) -> &'static str {
         }
         "assign" => "Assign a resource to a task with units (1 = full time).",
         "unassign" => "Remove an assignment.",
-        "cadence.add" => "Add a sprint cadence: COUNT equal iterations from START, ids <prefix>01…",
+        "cadence.add" => {
+            "Add a sprint cadence: COUNT equal iterations from START, ids <prefix>01…; `capacity` is points per iteration. Plan work in them with the task key `iteration` (stories: kind = story, with `points`)."
+        }
+        "cadence.set" => "Change a cadence: capacity, count, name, length, start, calendar.",
         "cadence.rm" => "Remove a cadence.",
-        "project.set" => "Set project keys: name, calendar, deadline, currency, description.",
+        "project.set" => {
+            "Set project keys: name, calendar, deadline, currency, description, status_date."
+        }
         "cal.add" => "Add a working calendar (workdays, hours like 09:00-13:00).",
         "cal.except" => "Add a holiday or blackout period to a calendar (dates inclusive).",
         "rule.set" => "Set a lint rule's severity for this plan (off, info, warn, error).",
+        "rule.param" => {
+            "Set a lint rule parameter: cv_threshold and sv_threshold (percent, default 10), tcpi_max (default 1.1), finish_slip (duration, default 5d), max_lag, emv_tolerance."
+        }
         "reserve.add" => {
             "Add a cost reserve: kind `contingency` (identified risks; inside the cost baseline, accrues at the finish of its scope) or `management` (the unforeseen; outside the baseline, inside the budget). Give a `basis`."
         }
@@ -200,6 +208,12 @@ fn op_description(op: &str) -> &'static str {
         "funding.rm" => "Remove a funding entry.",
         "level" => {
             "Resolve resource over-allocation: mode `leveling` delays tasks until their resources fit (the finish may move), `smoothing` only within free float, `off` turns it off. Saved in the plan; the result lists delayed tasks and what each waits for."
+        }
+        "progress.set" => {
+            "Record progress on a leaf task (ADR 0018): `start` and `finish` are the actual days, `remaining` the work left at the status date (default: duration minus the working time since the start), `pct` the physical percent complete (0-100) that earns value, `cost` the actual cost so far (cumulative; also on summaries and control accounts). Started tasks stay at their actual dates; `clear` removes recorded progress first."
+        }
+        "progress.date" => {
+            "Set the status date. Work not started, and the remaining work of tasks in progress, is scheduled after it."
         }
         "settings.set" => {
             "Set or unset scheduling settings ([settings.schedule]): hours_per_day, days_per_week, late_anchor, critical_threshold, near_critical, phase, leveling, …"
@@ -321,12 +335,65 @@ pub fn tools() -> Vec<Tool> {
                 &[],
             ),
         )),
+        read_only(Tool::new(
+            "iterations",
+            "Iterations of each cadence with committed and finished points, capacity, per-iteration SPI, velocity of the ended ones and a forecast finish (mean, best and worst velocity). Points are per team: velocities are never summed across cadences.",
+            schema(
+                json!({ "cadence": { "type": "string", "description": "Only this cadence" } }),
+                &[],
+            ),
+        )),
+        read_only(Tool::new(
+            "evm",
+            "Earned value at the status date against a baseline: PV, EV, AC, SV, CV, SPI, CPI, EAC (three statistical forecasts), ETC, VAC and TCPI for the project and per WBS node. Needs a status date and progress (`progress_set`, with `pct` and `cost`).",
+            schema(
+                json!({
+                    "baseline": { "type": "string", "description": "Default: the active one" },
+                    "depth": { "type": "integer", "minimum": 1, "description": "WBS levels to list (default 1)" },
+                    "accounts": { "type": "boolean", "description": "List control accounts instead" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "cursor": { "type": "string" },
+                }),
+                &[],
+            ),
+        )),
+        read_only(Tool::new(
+            "progress",
+            "Progress at the status date: counts by state, forecast finish against the baseline, and the tasks that should be moving (started, finished, or expected by the baseline to have started). Record progress with progress_set and progress_date.",
+            schema(
+                json!({
+                    "all": { "type": "boolean", "description": "Every activity, not only those that should be moving" },
+                    "baseline": { "type": "string", "description": "Default: the active one, if any" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "cursor": { "type": "string" },
+                }),
+                &[],
+            ),
+        )),
         Tool::new(
             "baseline_save",
             "Freeze the current schedule (dates, costs, planned value) as a new active baseline. Never overwrites an existing one; a revision should carry a change reference.",
             schema(
                 json!({
                     "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "change_ref": { "type": "string", "description": "Change request that approved it" },
+                    "reason": { "type": "string" },
+                    "approved_by": { "type": "string" },
+                    "date": { "type": "string", "description": "YYYY-MM-DD (default today)" },
+                    "dry_run": { "type": "boolean" },
+                }),
+                &["id"],
+            ),
+        )
+        .annotate(ToolAnnotations::new().read_only(false).destructive(false).idempotent(false)),
+        Tool::new(
+            "baseline_revise",
+            "Revise the active baseline after progress (ADR 0020): planned value through the status date stays the parent's, so past performance is never rewritten; the work after it follows the current plan. Give the change request (`change_ref`) and who approved it.",
+            schema(
+                json!({
+                    "id": { "type": "string" },
+                    "from": { "type": "string", "description": "Baseline to revise (default: the active one)" },
                     "name": { "type": "string" },
                     "change_ref": { "type": "string", "description": "Change request that approved it" },
                     "reason": { "type": "string" },
@@ -356,10 +423,12 @@ pub fn tools() -> Vec<Tool> {
         )),
         read_only(Tool::new(
             "render",
-            "Render a chart and return it as an image (PNG) so you can look at it, or as SVG text: the Gantt chart (default), a resource histogram (demand vs capacity) or the S-curve (forecast and planned value).",
+            "Render a chart and return it as an image (PNG) so you can look at it, or as SVG text: the Gantt chart (default), a resource histogram (demand vs capacity), the S-curve (forecast and planned value), a sprint burndown (points left per day vs the ideal line) or a cadence burnup (points done and planned per iteration vs total scope).",
             schema(
                 json!({
-                    "chart": { "enum": ["gantt", "histogram", "scurve"], "description": "Default gantt" },
+                    "chart": { "enum": ["gantt", "histogram", "scurve", "burndown", "burnup"], "description": "Default gantt" },
+                    "iteration": { "type": "string", "description": "Iteration id, for burndown" },
+                    "cadence": { "type": "string", "description": "Cadence id, for burnup (default: the only one)" },
                     "resource": { "type": "string", "description": "Resource id, for histogram" },
                     "period": { "enum": ["day", "week", "month"], "description": "histogram (default week) and scurve (default month)" },
                     "baseline": { "type": "string", "description": "scurve: baseline for planned value (default the active one)" },
@@ -374,11 +443,13 @@ pub fn tools() -> Vec<Tool> {
         )),
         Tool::new(
             "export",
-            "Write a chart (.svg, .png: gantt, histogram or scurve), the task table (.csv) or the cost workbook (.xlsx: cost per period by resource and category, tasks, resources, risks) to a file.",
+            "Write a chart (.svg, .png: gantt, histogram, scurve, burndown or burnup), the task table (.csv) or the cost workbook (.xlsx: cost per period by resource and category, tasks, resources, risks) to a file.",
             schema(
                 json!({
                     "out": { "type": "string" },
-                    "chart": { "enum": ["gantt", "histogram", "scurve"] },
+                    "chart": { "enum": ["gantt", "histogram", "scurve", "burndown", "burnup"] },
+                    "iteration": { "type": "string" },
+                    "cadence": { "type": "string" },
                     "resource": { "type": "string" },
                     "period": { "enum": ["day", "week", "month"] },
                     "baseline": { "type": "string" },
@@ -463,7 +534,8 @@ impl AlmaServer {
     fn load(&self, args: &JsonObject) -> Result<(PathBuf, alma_ops::Loaded), Outcome> {
         let path = self.plan_path(args)?;
         let src = alma_ops::files::read_text(&path).map_err(|m| Outcome::error("E-CLI-01", m))?;
-        Ok((path, alma_ops::load(&src)))
+        let l = alma_ops::load_file(&path, &src);
+        Ok((path, l))
     }
 
     /// Like `load`, but fails with the plan's errors when it cannot be scheduled.
@@ -523,6 +595,8 @@ impl AlmaServer {
             resource: str_arg(args, "resource").map(str::to_string),
             period: str_arg(args, "period").map(str::to_string),
             baseline,
+            iteration: str_arg(args, "iteration").map(str::to_string),
+            cadence: str_arg(args, "cadence").map(str::to_string),
         })
     }
 
@@ -693,7 +767,61 @@ impl AlmaServer {
                     false,
                 )
             }
-            "baseline_save" => {
+            "iterations" => {
+                let (_, l) = self.load(args)?;
+                let Some(plan) = l.plan.as_ref() else {
+                    return Err(Outcome::error("E-OPS-04", "the plan file has errors"));
+                };
+                let r = alma_ops::agile::report(plan, str_arg(args, "cadence"))
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                Outcome::from(&r, false)
+            }
+            "evm" => {
+                let (path, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let snap = alma_ops::baseline::snapshot_for(plan, &path, str_arg(args, "baseline"))
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?
+                    .ok_or_else(|| {
+                        Outcome::error(
+                            "L-EVM-04",
+                            "earned value is measured against a baseline, and the plan has none; save one with baseline_save",
+                        )
+                    })?;
+                let which = if bool_arg(args, "accounts") {
+                    alma_ops::evm::Rows::Accounts
+                } else {
+                    alma_ops::evm::Rows::Depth(usize_arg(args, "depth").unwrap_or(1))
+                };
+                let page = Page::new(usize_arg(args, "limit"), str_arg(args, "cursor"));
+                match alma_ops::evm::report(plan, s, &snap, which, page) {
+                    Ok(r) => Outcome::from(&r, false),
+                    Err(d) => {
+                        return Err(Outcome {
+                            json: json!({ "ok": false, "errors": [d] }),
+                            is_error: true,
+                            png: None,
+                        });
+                    }
+                }
+            }
+            "progress" => {
+                let (path, l) = self.scheduled(args)?;
+                let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+                let snap = alma_ops::baseline::snapshot_for(plan, &path, str_arg(args, "baseline"))
+                    .map_err(|m| Outcome::error("E-CLI-01", m))?;
+                let page = Page::new(usize_arg(args, "limit"), str_arg(args, "cursor"));
+                Outcome::from(
+                    &alma_ops::progress::report(
+                        plan,
+                        s,
+                        snap.as_ref(),
+                        bool_arg(args, "all"),
+                        page,
+                    ),
+                    false,
+                )
+            }
+            "baseline_save" | "baseline_revise" => {
                 let path = self.plan_path(args)?;
                 let id = str_arg(args, "id").unwrap_or_default().to_string();
                 let s = |k| str_arg(args, k).map(str::to_string);
@@ -704,9 +832,15 @@ impl AlmaServer {
                     change_ref: s("change_ref"),
                     reason: s("reason"),
                     approved_by: s("approved_by"),
+                    parent: s("from"),
                 };
                 let _guard = self.write_lock.lock().unwrap_or_else(|p| p.into_inner());
-                match alma_ops::baseline::save(&path, &meta, bool_arg(args, "dry_run")) {
+                let result = if name == "baseline_revise" {
+                    alma_ops::baseline::revise(&path, &meta, bool_arg(args, "dry_run"))
+                } else {
+                    alma_ops::baseline::save(&path, &meta, bool_arg(args, "dry_run"))
+                };
+                match result {
                     Ok(r) => Outcome::from(&r, !r.report.ok),
                     Err(e) => Outcome::error("E-CLI-01", format!("cannot save the baseline: {e}")),
                 }

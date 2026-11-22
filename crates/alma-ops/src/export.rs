@@ -25,7 +25,7 @@ pub struct RenderRequest {
     pub no_arrows: bool,
     /// Base font size in points (minimum 9).
     pub font_size: Option<f64>,
-    /// `gantt` (default), `histogram` or `scurve`.
+    /// `gantt` (default), `histogram`, `scurve`, `burndown` or `burnup`.
     pub chart: Option<String>,
     /// Resource id, for `histogram`.
     pub resource: Option<String>,
@@ -33,6 +33,10 @@ pub struct RenderRequest {
     pub period: Option<String>,
     /// Baseline snapshot for the planned value line of `scurve`.
     pub baseline: Option<alma_core::model::Snapshot>,
+    /// Iteration id, for `burndown`.
+    pub iteration: Option<String>,
+    /// Cadence id, for `burnup` (default: the only one).
+    pub cadence: Option<String>,
 }
 
 /// Parses `A..B` where each end is `YYYY-MM` or `YYYY-MM-DD`.
@@ -145,6 +149,7 @@ fn display(
                 values: r.points.iter().map(|p| p.cumulative).collect(),
                 main: true,
                 step: false,
+                origin: 0.0,
             }];
             if r.points.iter().any(|p| p.funded.is_some()) {
                 series.push(alma_layout::charts::Series {
@@ -152,6 +157,7 @@ fn display(
                     values: r.points.iter().map(|p| p.funded.unwrap_or(0.0)).collect(),
                     main: false,
                     step: true,
+                    origin: 0.0,
                 });
             }
             if let Some(b) = &r.baseline {
@@ -160,6 +166,7 @@ fn display(
                     values: r.points.iter().map(|p| p.pv.unwrap_or(0.0)).collect(),
                     main: false,
                     step: false,
+                    origin: 0.0,
                 });
             }
             let data = alma_layout::charts::CurveData {
@@ -179,8 +186,62 @@ fn display(
                 opts.font_size,
             ))
         }
+        "burndown" => {
+            let id = req.iteration.as_deref().ok_or_else(|| {
+                "the burndown needs an iteration (--iteration s03); `alma iter ls` lists them"
+                    .to_string()
+            })?;
+            let b = crate::agile::burndown(plan, id)?;
+            let line = |name: &str, values: Vec<f64>, main: bool| alma_layout::charts::Series {
+                name: name.into(),
+                values,
+                main,
+                step: false,
+                origin: b.committed,
+            };
+            let data = alma_layout::charts::CurveData {
+                title: format!("Burndown of {}: points left per day", b.iteration),
+                unit: "points".into(),
+                labels: b.days.iter().map(|d| d[5..].to_string()).collect(),
+                series: vec![
+                    line("ideal", b.ideal.clone(), false),
+                    line("remaining", b.remaining.clone(), true),
+                ],
+                ceiling: None,
+            };
+            Ok(alma_layout::charts::curve(
+                &data,
+                opts.theme,
+                opts.font_size,
+            ))
+        }
+        "burnup" => {
+            let b = crate::agile::burnup(plan, req.cadence.as_deref())?;
+            let line = |name: &str, values: Vec<f64>, main: bool| alma_layout::charts::Series {
+                name: name.into(),
+                values,
+                main,
+                step: false,
+                origin: 0.0,
+            };
+            let data = alma_layout::charts::CurveData {
+                title: format!("Burnup of {}: points per iteration, cumulative", b.cadence),
+                unit: "points".into(),
+                labels: b.iterations.clone(),
+                series: vec![
+                    line("planned", b.planned.clone(), false),
+                    line("done", b.done.clone(), true),
+                ],
+                ceiling: Some(("scope".into(), b.scope)),
+            };
+            Ok(alma_layout::charts::curve(
+                &data,
+                opts.theme,
+                opts.font_size,
+            ))
+        }
         other => Err(format!(
-            "unknown chart `{other}`; use gantt, histogram or scurve"
+            "unknown chart `{other}`; use gantt, histogram, scurve, burndown or burnup"
         )),
     }
 }

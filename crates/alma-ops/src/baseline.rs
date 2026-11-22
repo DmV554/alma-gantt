@@ -127,7 +127,82 @@ pub struct SaveReport {
 
 /// `alma baseline save`: freezes the current schedule as a new active baseline.
 pub fn save(path: &Path, meta: &BaselineMeta, dry_run: bool) -> std::io::Result<SaveReport> {
+    write_baseline(path, meta, dry_run, false)
+}
+
+/// `alma baseline revise`: a new active baseline that keeps the parent's planned value through
+/// the status date and follows the current plan after it (ADR 0020).
+pub fn revise(path: &Path, meta: &BaselineMeta, dry_run: bool) -> std::io::Result<SaveReport> {
+    write_baseline(path, meta, dry_run, true)
+}
+
+fn refused(d: alma_core::diag::Diagnostic, dry_run: bool) -> SaveReport {
+    SaveReport {
+        report: MutationReport::rejected(vec![d], dry_run),
+        baseline: None,
+    }
+}
+
+fn write_baseline(
+    path: &Path,
+    meta: &BaselineMeta,
+    dry_run: bool,
+    revision: bool,
+) -> std::io::Result<SaveReport> {
     let src = std::fs::read_to_string(path)?;
+    // A revision needs a status date and a format 1 parent; check before writing anything.
+    let mut parent_snap = None;
+    if revision {
+        use alma_core::diag::Diagnostic;
+        let before = load(&src);
+        let Some(plan) = before.plan.as_ref() else {
+            return Ok(refused(
+                Diagnostic::error("E-OPS-04", "the plan has errors; fix them first"),
+                dry_run,
+            ));
+        };
+        let Some(at) = plan.project.status_date else {
+            return Ok(refused(
+                Diagnostic::error(
+                    "E-OPS-04",
+                    "a revision keeps planned value up to the status date, and the plan has none",
+                )
+                .with_ids([meta.id.clone()])
+                .with_hint("set it with `alma progress date YYYY-MM-DD`, or save a fresh baseline with `alma baseline save`"),
+                dry_run,
+            ));
+        };
+        let parent = match pick(plan, meta.parent.as_deref()) {
+            Ok(p) => p.to_string(),
+            Err(m) => {
+                return Ok(refused(
+                    Diagnostic::error("E-OPS-02", m).with_ids([meta.id.clone()]),
+                    dry_run,
+                ));
+            }
+        };
+        let snap = match read_snapshot(path, &parent) {
+            Ok(s) if s.per_task => s,
+            Ok(_) => {
+                return Ok(refused(
+                    Diagnostic::error(
+                        "L-EVM-04",
+                        format!("baseline `{parent}` is snapshot format 0, without per-task planned value to keep"),
+                    )
+                    .with_ids([meta.id.clone(), parent.clone()])
+                    .with_hint("save a fresh baseline with `alma baseline save` instead"),
+                    dry_run,
+                ));
+            }
+            Err(m) => {
+                return Ok(refused(
+                    Diagnostic::error("E-OPS-02", m).with_ids([meta.id.clone(), parent.clone()]),
+                    dry_run,
+                ));
+            }
+        };
+        parent_snap = Some((snap, at));
+    }
     let (text, report) = apply_edit(&src, dry_run, false, |doc| {
         crate::mutate::add_baseline(doc, meta)
     });
@@ -144,7 +219,10 @@ pub fn save(path: &Path, meta: &BaselineMeta, dry_run: bool) -> std::io::Result<
             baseline: None,
         });
     };
-    let snap = alma_sched::baseline::snapshot(&meta.id, plan, s);
+    let snap = match &parent_snap {
+        Some((parent, at)) => alma_sched::baseline::revise(&meta.id, plan, s, parent, *at),
+        None => alma_sched::baseline::snapshot(&meta.id, plan, s),
+    };
     let file = snapshot_path(path, &meta.id);
     let view = SavedView {
         id: meta.id.clone(),
@@ -161,7 +239,12 @@ pub fn save(path: &Path, meta: &BaselineMeta, dry_run: bool) -> std::io::Result<
             let _ = std::fs::remove_file(&file);
             return Err(e);
         }
-        crate::mutate::log_command(path, "baseline.save", &meta.id);
+        let op = if revision {
+            "baseline.revise"
+        } else {
+            "baseline.save"
+        };
+        crate::mutate::log_command(path, op, &meta.id);
     }
     Ok(SaveReport {
         report,
@@ -187,6 +270,9 @@ pub struct BaselineView {
     /// Change request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change_ref: Option<String>,
+    /// For a revision: the status date it kept planned value up to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revised_at: Option<String>,
     /// Project finish it promised.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish: Option<String>,
@@ -211,6 +297,11 @@ pub fn list(plan: &Plan, plan_path: &Path) -> Vec<BaselineView> {
                 active: b.active,
                 parent: b.parent.clone(),
                 change_ref: b.change_ref.clone(),
+                revised_at: snap
+                    .as_ref()
+                    .ok()
+                    .and_then(|s| s.revised_at)
+                    .map(|d| d.to_string()),
                 finish: snap
                     .as_ref()
                     .ok()

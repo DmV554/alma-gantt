@@ -51,6 +51,8 @@ string_enum! {
         Loe = "loe",
         /// Time reserve.
         Buffer = "buffer",
+        /// Backlog item: no duration of its own; its dates are its iteration's (ADR 0021).
+        Story = "story",
     }
 }
 
@@ -247,6 +249,16 @@ string_enum! {
 }
 
 string_enum! {
+    /// How the remaining work of a task that started out of sequence is scheduled (ADR 0018).
+    ProgressLogic {
+        /// The remaining work still waits for its unfinished predecessors.
+        RetainedLogic = "retained_logic",
+        /// Once a task has started, its links no longer hold back its remaining work.
+        ProgressOverride = "progress_override",
+    }
+}
+
+string_enum! {
     /// Reporting period.
     ReportingPeriod {
         /// One week.
@@ -401,6 +413,39 @@ pub struct CostReserve {
     pub risks: Vec<String>,
 }
 
+/// How progress on a task earns its budget (F-COST-14, ADR 0019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvMethod {
+    /// Physical percent complete, measured on the work (`physical_pct`).
+    Physical,
+    /// Fixed formula `S/F`: S % of the budget is earned at the actual start, the rest at the
+    /// actual finish (`0/100`, `50/50`, `20/80`).
+    Fixed {
+        /// Percent earned at the start, 0 to 100.
+        start: u8,
+    },
+}
+
+impl EvMethod {
+    /// Parses `physical` or `S/F` with S + F = 100.
+    pub fn parse(text: &str) -> Option<Self> {
+        if text == "physical" {
+            return Some(EvMethod::Physical);
+        }
+        let (a, b) = text.split_once('/')?;
+        let (a, b): (u8, u8) = (a.parse().ok()?, b.parse().ok()?);
+        (u16::from(a) + u16::from(b) == 100).then_some(EvMethod::Fixed { start: a })
+    }
+
+    /// The spelling used in plan files.
+    pub fn as_string(self) -> String {
+        match self {
+            EvMethod::Physical => "physical".into(),
+            EvMethod::Fixed { start } => format!("{start}/{}", 100 - start),
+        }
+    }
+}
+
 /// One task in a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapTask {
@@ -412,6 +457,27 @@ pub struct SnapTask {
     pub finish: crate::time::Instant,
     /// Cost of the task and its descendants.
     pub cost: Decimal,
+    /// The task's own budget (its assignments and fixed cost, no reserves, no descendants):
+    /// what earned value measures it against (ADR 0019).
+    pub budget: Decimal,
+    /// Cumulative planned value of the own budget at the end of each day on which some of it
+    /// accrues, date order.
+    pub pv: Vec<(Date, Decimal)>,
+}
+
+impl SnapTask {
+    /// Planned value of the task's own budget through the end of `date` (F-COST-13).
+    pub fn pv_through(&self, date: Date) -> Decimal {
+        cumulative_through(&self.pv, date)
+    }
+}
+
+fn cumulative_through(curve: &[(Date, Decimal)], date: Date) -> Decimal {
+    match curve.binary_search_by(|(d, _)| d.cmp(&date)) {
+        Ok(i) => curve[i].1,
+        Err(0) => Decimal::ZERO,
+        Err(i) => curve[i - 1].1,
+    }
 }
 
 /// What a baseline froze.
@@ -430,16 +496,18 @@ pub struct Snapshot {
     /// Cumulative planned cost at the end of each day on which some cost accrued, in date
     /// order. Days without an entry keep the previous value.
     pub pv: Vec<(Date, Decimal)>,
+    /// True when tasks carry their own budget and planned value (snapshot format 1); format 0
+    /// snapshots cannot be used for earned value.
+    pub per_task: bool,
+    /// For a revision (`alma baseline revise`): the status date it was made at. Planned value
+    /// through that day is the parent's; after it, the plan's at the time (ADR 0020).
+    pub revised_at: Option<Date>,
 }
 
 impl Snapshot {
     /// Cumulative planned value at the end of `date` (F-COST-13).
     pub fn pv_through(&self, date: Date) -> Decimal {
-        match self.pv.binary_search_by(|(d, _)| d.cmp(&date)) {
-            Ok(i) => self.pv[i].1,
-            Err(0) => Decimal::ZERO,
-            Err(i) => self.pv[i - 1].1,
-        }
+        cumulative_through(&self.pv, date)
     }
 }
 
@@ -480,6 +548,8 @@ pub struct Project {
     pub currency: Option<String>,
     /// Narrative.
     pub description: Option<String>,
+    /// Data date: progress is reported through the end of this day (ADR 0018).
+    pub status_date: Option<Date>,
 }
 
 /// `[settings.schedule]`.
@@ -509,6 +579,8 @@ pub struct ScheduleSettings {
     pub leveling: Leveling,
     /// How resource calendars combine with task calendars.
     pub resource_calendars: ResourceCalendars,
+    /// How out-of-sequence progress is scheduled (ADR 0018).
+    pub progress_logic: ProgressLogic,
 }
 
 impl Default for ScheduleSettings {
@@ -526,6 +598,7 @@ impl Default for ScheduleSettings {
             three_point: Dist::Beta,
             leveling: Leveling::Off,
             resource_calendars: ResourceCalendars::Intersect,
+            progress_logic: ProgressLogic::RetainedLogic,
         }
     }
 }
@@ -644,6 +717,8 @@ pub struct Cadence {
     pub count: u32,
     /// Calendar id.
     pub calendar: Option<String>,
+    /// Points the team can take on per iteration (ADR 0021).
+    pub capacity: Option<Decimal>,
 }
 
 impl Cadence {
@@ -713,6 +788,22 @@ pub struct Task {
     pub assign: Vec<Assignment>,
     /// Fixed cost.
     pub fixed_cost: Option<FixedCost>,
+    /// Progress: the day work started (ADR 0018).
+    pub actual_start: Option<Date>,
+    /// Progress: the day work finished.
+    pub actual_finish: Option<Date>,
+    /// Progress: working time left on a started task at the status date.
+    pub remaining: Option<Duration>,
+    /// Earned value: physical percent complete, 0 to 100 (ADR 0019).
+    pub physical_pct: Option<Decimal>,
+    /// Earned value: how progress earns the task's budget.
+    pub ev_method: Option<EvMethod>,
+    /// Actual cost through the status date, cumulative; on any WBS node.
+    pub actual_cost: Option<Decimal>,
+    /// Iteration the work is planned in (a generated iteration id; ADR 0021).
+    pub iteration: Option<String>,
+    /// Relative size in story points.
+    pub points: Option<Decimal>,
     /// Lint codes silenced on this node.
     pub allow: Vec<String>,
     /// Tags.
@@ -754,11 +845,29 @@ impl Task {
             deps: Vec::new(),
             assign: Vec::new(),
             fixed_cost: None,
+            actual_start: None,
+            actual_finish: None,
+            remaining: None,
+            physical_pct: None,
+            ev_method: None,
+            actual_cost: None,
+            iteration: None,
+            points: None,
             allow: Vec::new(),
             tags: Vec::new(),
             custom: BTreeMap::new(),
             span: None,
         }
+    }
+}
+
+impl Task {
+    /// True when any progress is recorded on the task.
+    pub fn has_progress(&self) -> bool {
+        self.actual_start.is_some()
+            || self.actual_finish.is_some()
+            || self.remaining.is_some()
+            || self.physical_pct.is_some()
     }
 }
 

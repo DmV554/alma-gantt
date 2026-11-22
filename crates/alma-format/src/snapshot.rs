@@ -11,8 +11,49 @@ use jiff::civil::Date;
 use rust_decimal::Decimal;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
 
-/// Version of the snapshot layout.
-pub const SNAPSHOT_FORMAT: i64 = 0;
+/// Version of the snapshot layout. Format 1 (ADR 0019) adds each task's own `budget` and
+/// planned value curve `pv`; format 0 files are still read, without them.
+pub const SNAPSHOT_FORMAT: i64 = 1;
+
+/// A `[[date, amount], …]` array, one pair per line.
+fn curve(points: &[(Date, Decimal)], indent: &str) -> Array {
+    let mut pv = Array::new();
+    for (d, amount) in points {
+        let mut pair = Array::new();
+        pair.push(d.to_string());
+        pair.push(amount.normalize().to_string());
+        pair.decor_mut().set_prefix(format!("\n{indent}"));
+        pv.push(pair);
+    }
+    pv.set_trailing("\n");
+    pv.set_trailing_comma(true);
+    pv
+}
+
+/// Reads a `[[date, amount], …]` array.
+fn read_curve(item: Option<&Item>, what: &str) -> Result<Vec<(Date, Decimal)>, String> {
+    let mut pv = Vec::new();
+    let Some(item) = item else {
+        return Ok(pv);
+    };
+    let bad = || format!("`{what}` holds [date, amount] pairs");
+    for pair in item.as_array().ok_or_else(bad)?.iter() {
+        let pair = pair.as_array().ok_or_else(bad)?;
+        let (Some(d), Some(a)) = (
+            pair.get(0).and_then(|v| v.as_str()),
+            pair.get(1).and_then(|v| v.as_str()),
+        ) else {
+            return Err(bad());
+        };
+        let d: Date = d.parse().map_err(|_| format!("`{d}` is not a date"))?;
+        let a = Decimal::from_str(a).map_err(|_| format!("`{a}` is not a number"))?;
+        pv.push((d, a));
+    }
+    if pv.windows(2).any(|w| w[0].0 >= w[1].0) {
+        return Err(format!("`{what}` dates must increase"));
+    }
+    Ok(pv)
+}
 
 /// The snapshot as text.
 pub fn to_text(s: &Snapshot) -> String {
@@ -22,17 +63,10 @@ pub fn to_text(s: &Snapshot) -> String {
     doc.insert("start", value(format_instant(s.start)));
     doc.insert("finish", value(format_instant(s.finish)));
     doc.insert("bac", value(s.bac.normalize().to_string()));
-    let mut pv = Array::new();
-    for (d, amount) in &s.pv {
-        let mut pair = Array::new();
-        pair.push(d.to_string());
-        pair.push(amount.normalize().to_string());
-        pair.decor_mut().set_prefix("\n  ");
-        pv.push(pair);
+    if let Some(at) = s.revised_at {
+        doc.insert("revised_at", value(at.to_string()));
     }
-    pv.set_trailing("\n");
-    pv.set_trailing_comma(true);
-    doc.insert("pv", value(pv));
+    doc.insert("pv", value(curve(&s.pv, "  ")));
     let mut tasks = ArrayOfTables::new();
     for t in &s.tasks {
         let mut row = Table::new();
@@ -40,6 +74,10 @@ pub fn to_text(s: &Snapshot) -> String {
         row.insert("start", value(format_instant(t.start)));
         row.insert("finish", value(format_instant(t.finish)));
         row.insert("cost", value(t.cost.normalize().to_string()));
+        if !t.budget.is_zero() || !t.pv.is_empty() {
+            row.insert("budget", value(t.budget.normalize().to_string()));
+            row.insert("pv", value(curve(&t.pv, "  ")));
+        }
         tasks.push(row);
     }
     doc.insert("task", Item::ArrayOfTables(tasks));
@@ -75,39 +113,32 @@ pub fn from_text(text: &str) -> Result<Snapshot, String> {
     };
     let money = |s: &str| Decimal::from_str(s).map_err(|_| format!("`{s}` is not a number"));
     let root = doc.as_table();
-    if root.get("format").and_then(Item::as_integer) != Some(SNAPSHOT_FORMAT) {
+    let format = root.get("format").and_then(Item::as_integer);
+    if !matches!(format, Some(0..=SNAPSHOT_FORMAT)) {
         return Err(format!(
-            "unsupported snapshot format (expected {SNAPSHOT_FORMAT})"
+            "unsupported snapshot format (expected 0 to {SNAPSHOT_FORMAT})"
         ));
     }
-    let mut pv = Vec::new();
-    for pair in root
-        .get("pv")
-        .and_then(Item::as_array)
-        .ok_or("missing `pv`")?
-        .iter()
-    {
-        let pair = pair.as_array().ok_or("`pv` holds [date, amount] pairs")?;
-        let (Some(d), Some(a)) = (
-            pair.get(0).and_then(|v| v.as_str()),
-            pair.get(1).and_then(|v| v.as_str()),
-        ) else {
-            return Err("`pv` holds [date, amount] pairs".into());
-        };
-        let d: Date = d.parse().map_err(|_| format!("`{d}` is not a date"))?;
-        pv.push((d, money(a)?));
+    if root.get("pv").is_none() {
+        return Err("missing `pv`".into());
     }
-    if pv.windows(2).any(|w| w[0].0 >= w[1].0) {
-        return Err("`pv` dates must increase".into());
-    }
+    let pv = read_curve(root.get("pv"), "pv")?;
     let mut tasks = Vec::new();
     if let Some(aot) = root.get("task").and_then(Item::as_array_of_tables) {
         for t in aot.iter() {
+            let id = str_of(t, "id")?;
+            let budget = match t.get("budget") {
+                Some(_) => money(&str_of(t, "budget")?)?,
+                None => Decimal::ZERO,
+            };
+            let pv = read_curve(t.get("pv"), &format!("pv of {id}"))?;
             tasks.push(SnapTask {
-                id: str_of(t, "id")?,
+                id,
                 start: instant(t, "start")?,
                 finish: instant(t, "finish")?,
                 cost: money(&str_of(t, "cost")?)?,
+                budget,
+                pv,
             });
         }
     }
@@ -118,6 +149,15 @@ pub fn from_text(text: &str) -> Result<Snapshot, String> {
         bac: money(&str_of(root, "bac")?)?,
         tasks,
         pv,
+        per_task: format == Some(1),
+        revised_at: match root.get("revised_at") {
+            Some(_) => Some(
+                str_of(root, "revised_at")?
+                    .parse()
+                    .map_err(|_| "`revised_at` is not a date".to_string())?,
+            ),
+            None => None,
+        },
     })
 }
 
@@ -133,16 +173,33 @@ mod tests {
             start: start_of(d(1, 4)) + 9 * 60,
             finish: start_of(d(3, 5)) + 18 * 60,
             bac: Decimal::from_str("4714.500000000001").unwrap(),
-            tasks: vec![SnapTask {
-                id: "a".into(),
-                start: start_of(d(1, 4)) + 9 * 60,
-                finish: start_of(d(1, 8)) + 18 * 60,
-                cost: Decimal::from_str("12.3").unwrap(),
-            }],
+            tasks: vec![
+                SnapTask {
+                    id: "a".into(),
+                    start: start_of(d(1, 4)) + 9 * 60,
+                    finish: start_of(d(1, 8)) + 18 * 60,
+                    cost: Decimal::from_str("12.3").unwrap(),
+                    budget: Decimal::from_str("12.3").unwrap(),
+                    pv: vec![
+                        (d(1, 4), Decimal::from_str("1.5").unwrap()),
+                        (d(1, 8), Decimal::from_str("12.3").unwrap()),
+                    ],
+                },
+                SnapTask {
+                    id: "m".into(),
+                    start: start_of(d(1, 8)) + 18 * 60,
+                    finish: start_of(d(1, 8)) + 18 * 60,
+                    cost: Decimal::ZERO,
+                    budget: Decimal::ZERO,
+                    pv: Vec::new(),
+                },
+            ],
             pv: vec![
                 (d(1, 4), Decimal::from_str("1.5").unwrap()),
                 (d(1, 5), Decimal::from_str("3").unwrap()),
             ],
+            per_task: true,
+            revised_at: Some(d(1, 6)),
         };
         let text = to_text(&s);
         assert!(
@@ -152,6 +209,11 @@ mod tests {
         assert_eq!(from_text(&text).unwrap(), s);
         assert_eq!(to_text(&from_text(&text).unwrap()), text);
         assert!(from_text("format = 9").is_err());
+        // Format 0 files (ADR 0013) still read, without per-task budgets.
+        let v0 = "format = 0\nbaseline = \"b0\"\nstart = \"2027-01-04T09:00\"\nfinish = \"2027-01-08T18:00\"\nbac = \"1\"\npv = []\n[[task]]\nid = \"a\"\nstart = \"2027-01-04T09:00\"\nfinish = \"2027-01-08T18:00\"\ncost = \"1\"\n";
+        let s0 = from_text(v0).unwrap();
+        assert!(!s0.per_task);
+        assert_eq!(s0.tasks[0].budget, Decimal::ZERO);
         assert_eq!(parse_instant("2027-01-04T24:00"), Some(start_of(d(1, 5))));
         assert_eq!(parse_instant("2027-01-04T25:00"), None);
     }

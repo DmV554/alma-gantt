@@ -119,8 +119,8 @@ enum Cmd {
     },
     /// Export a chart (.svg, .png), the task table (.csv) or the cost workbook (.xlsx: cost per
     /// period, tasks, resources, risks); `-` writes SVG or CSV to stdout.
-    /// Charts: the Gantt chart (default), a resource histogram, the S-curve. `render` is an
-    /// alias.
+    /// Charts: the Gantt chart (default), a resource histogram, the S-curve, a sprint burndown,
+    /// a cadence burnup. `render` is an alias.
     #[command(alias = "render")]
     Export {
         /// Output file; the extension picks the format unless --format is given.
@@ -128,12 +128,18 @@ enum Cmd {
         /// svg, png, csv or xlsx.
         #[arg(long)]
         format: Option<String>,
-        /// gantt, histogram (needs --resource) or scurve.
+        /// gantt, histogram (needs --resource), scurve, burndown (needs --iteration) or burnup.
         #[arg(long)]
         chart: Option<String>,
         /// Resource id, for --chart histogram.
         #[arg(long)]
         resource: Option<String>,
+        /// Iteration id, for --chart burndown.
+        #[arg(long)]
+        iteration: Option<String>,
+        /// Cadence id, for --chart burnup (default: the only one).
+        #[arg(long)]
+        cadence: Option<String>,
         /// day, week or month, for histogram (default week), scurve and xlsx (default month).
         #[arg(long)]
         period: Option<String>,
@@ -193,6 +199,24 @@ enum Cmd {
     /// Baselines: frozen copies of dates and costs to measure the plan against.
     #[command(subcommand)]
     Baseline(BaselineCmd),
+    /// Progress: actual dates and remaining work at the status date (ADR 0018).
+    #[command(subcommand)]
+    Progress(ProgressCmd),
+    /// Earned value at the status date: PV, EV, AC, variances, SPI, CPI, EAC and TCPI for the
+    /// project and per WBS node (ADR 0019).
+    Evm {
+        /// Baseline id (default: the active one).
+        #[arg(long)]
+        baseline: Option<String>,
+        /// WBS levels to list (default 1).
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        /// List control accounts instead of WBS levels.
+        #[arg(long)]
+        accounts: bool,
+        #[command(flatten)]
+        page: PageArgs,
+    },
     /// How the current schedule differs from a baseline: dates and cost per task.
     Variance {
         /// Baseline id (default: the active one).
@@ -534,32 +558,97 @@ enum FundingCmd {
     },
 }
 
+#[derive(Args)]
+struct BaselineArgs {
+    /// Baseline id, e.g. b1 or contract.
+    id: String,
+    /// Name.
+    #[arg(long)]
+    name: Option<String>,
+    /// Change request that approved it (expected when it revises another baseline).
+    #[arg(long = "change")]
+    change_ref: Option<String>,
+    /// Why it is saved or revised.
+    #[arg(long)]
+    reason: Option<String>,
+    /// Who approved it.
+    #[arg(long)]
+    approved_by: Option<String>,
+    /// Day it is saved (default: today).
+    #[arg(long)]
+    date: Option<String>,
+    #[command(flatten)]
+    m: MutArgs,
+}
+
 #[derive(Subcommand)]
 enum BaselineCmd {
     /// Freeze the current schedule as a new active baseline. Never overwrites one.
     Save {
-        /// Baseline id, e.g. b1 or contract.
-        id: String,
-        /// Name.
-        #[arg(long)]
-        name: Option<String>,
-        /// Change request that approved it (expected when it revises another baseline).
-        #[arg(long = "change")]
-        change_ref: Option<String>,
-        /// Why it is saved or revised.
-        #[arg(long)]
-        reason: Option<String>,
-        /// Who approved it.
-        #[arg(long)]
-        approved_by: Option<String>,
-        /// Day it is saved (default: today).
-        #[arg(long)]
-        date: Option<String>,
         #[command(flatten)]
-        m: MutArgs,
+        b: BaselineArgs,
+    },
+    /// Revise the active baseline after progress: planned value up to the status date stays as
+    /// it was, the work after it follows the current plan. Give the change request.
+    Revise {
+        #[command(flatten)]
+        b: BaselineArgs,
+        /// Baseline to revise (default: the active one).
+        #[arg(long)]
+        from: Option<String>,
     },
     /// List baselines with the finish and budget each one promised.
     Ls,
+}
+
+#[derive(Subcommand)]
+enum ProgressCmd {
+    /// Record progress on a task: the day it started, the day it finished, the work left.
+    Set {
+        /// Task id.
+        id: String,
+        /// Day work started (YYYY-MM-DD).
+        #[arg(long)]
+        start: Option<String>,
+        /// Day work finished (YYYY-MM-DD).
+        #[arg(long)]
+        finish: Option<String>,
+        /// Working time left at the status date, e.g. 3d (default: duration minus the
+        /// working time since the start).
+        #[arg(long)]
+        remaining: Option<String>,
+        /// Physical percent complete, 0 to 100, measured on the work (earned value).
+        #[arg(long)]
+        pct: Option<String>,
+        /// Actual cost so far, cumulative (also on summaries and control accounts).
+        #[arg(long)]
+        cost: Option<String>,
+        /// Remove the task's recorded progress first (alone: remove it).
+        #[arg(long)]
+        clear: bool,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Set the status date: progress is measured through the end of this day, and work not
+    /// done is scheduled after it.
+    Date {
+        /// The day (YYYY-MM-DD).
+        date: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Tasks started or finished, and tasks the baseline expected to have started by the
+    /// status date, with forecast finish and finish variance.
+    Ls {
+        /// Every activity, not only those that should be moving.
+        #[arg(long)]
+        all: bool,
+        /// Baseline id (default: the active one, if any).
+        #[arg(long)]
+        baseline: Option<String>,
+        #[command(flatten)]
+        page: PageArgs,
+    },
 }
 
 #[derive(Subcommand)]
@@ -585,6 +674,16 @@ enum RuleCmd {
         code: String,
         /// off, info, warn or error.
         severity: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Set a lint rule parameter: cv_threshold and sv_threshold (percent, default 10),
+    /// tcpi_max (default 1.1), finish_slip (duration, default 5d), max_lag, emv_tolerance.
+    Param {
+        /// Parameter name.
+        name: String,
+        /// Value: a number, or a duration like 5d.
+        value: String,
         #[command(flatten)]
         m: MutArgs,
     },
@@ -614,6 +713,21 @@ enum IterCmd {
         /// Calendar id.
         #[arg(long)]
         calendar: Option<String>,
+        /// Points the team can take on per iteration.
+        #[arg(long)]
+        capacity: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Change a cadence: KEY=VALUE pairs (capacity=30, count=14, name="Team A", …).
+    Set {
+        /// Cadence id.
+        id: String,
+        /// KEY=VALUE pairs.
+        pairs: Vec<String>,
+        /// Remove a key (repeatable).
+        #[arg(long)]
+        unset: Vec<String>,
         #[command(flatten)]
         m: MutArgs,
     },
@@ -623,6 +737,12 @@ enum IterCmd {
         id: String,
         #[command(flatten)]
         m: MutArgs,
+    },
+    /// Iterations with committed and finished points, velocity and a forecast finish.
+    Ls {
+        /// Only this cadence.
+        #[arg(long)]
+        cadence: Option<String>,
     },
 }
 
@@ -788,6 +908,28 @@ enum MinSeverity {
 /// A command failure that is not about the plan (exit code 2).
 struct Usage(String);
 
+/// `KEY=VALUE` pairs from the command line.
+fn kv_pairs(pairs: &[String]) -> Result<BTreeMap<String, FieldValue>, Usage> {
+    let mut fields = BTreeMap::new();
+    for kv in pairs {
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| Usage(format!("expected KEY=VALUE, got `{kv}`")))?;
+        fields.insert(k.to_string(), FieldValue::Text(v.to_string()));
+    }
+    Ok(fields)
+}
+
+/// Reports errors about the plan (exit code 1).
+fn report_errors(errors: &[Diagnostic], json: bool) -> ExitCode {
+    if json {
+        print_json(&serde_json::json!({ "ok": false, "errors": errors }));
+    } else {
+        errors.iter().for_each(print_diag);
+    }
+    ExitCode::from(1)
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let json = cli.json;
@@ -837,7 +979,8 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
     let loaded = |file: Option<PathBuf>| -> Result<(PathBuf, alma_ops::Loaded), Usage> {
         let path = resolve_file(file)?;
         let src = read(&path)?;
-        Ok((path, alma_ops::load(&src)))
+        let l = alma_ops::load_file(&path, &src);
+        Ok((path, l))
     };
     // Queries need a schedulable plan; report its errors otherwise.
     let scheduled = |l: &alma_ops::Loaded| -> Option<ExitCode> {
@@ -1372,26 +1515,31 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             };
             mutation(file, &[op], m.dry_run, json)
         }
-        Cmd::Baseline(BaselineCmd::Save {
-            id,
-            name,
-            change_ref,
-            reason,
-            approved_by,
-            date,
-            m,
-        }) => {
-            let path = resolve_file(file)?;
-            let meta = mutate::BaselineMeta {
-                id,
-                name,
-                date: date.unwrap_or_else(|| alma_ops::files::today().to_string()),
-                change_ref,
-                reason,
-                approved_by,
+        Cmd::Baseline(c @ (BaselineCmd::Save { .. } | BaselineCmd::Revise { .. })) => {
+            let (b, parent, revision) = match c {
+                BaselineCmd::Save { b } => (b, None, false),
+                BaselineCmd::Revise { b, from } => (b, from, true),
+                BaselineCmd::Ls => unreachable!("matched above"),
             };
-            let r = alma_ops::baseline::save(&path, &meta, m.dry_run)
-                .map_err(|e| Usage(format!("cannot save the baseline: {e}")))?;
+            let path = resolve_file(file)?;
+            let m = b.m;
+            let meta = mutate::BaselineMeta {
+                id: b.id,
+                name: b.name,
+                date: b
+                    .date
+                    .unwrap_or_else(|| alma_ops::files::today().to_string()),
+                change_ref: b.change_ref,
+                reason: b.reason,
+                approved_by: b.approved_by,
+                parent,
+            };
+            let r = if revision {
+                alma_ops::baseline::revise(&path, &meta, m.dry_run)
+            } else {
+                alma_ops::baseline::save(&path, &meta, m.dry_run)
+            }
+            .map_err(|e| Usage(format!("cannot save the baseline: {e}")))?;
             if json {
                 print_json(&r);
             } else if let Some(b) = &r.baseline {
@@ -1440,6 +1588,179 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                             b.bac.unwrap_or_default()
                         ),
                     }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Progress(ProgressCmd::Ls {
+            all,
+            baseline,
+            page,
+        }) => {
+            let (path, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let plan = l.plan.as_ref().unwrap();
+            let snap = alma_ops::baseline::snapshot_for(plan, &path, baseline.as_deref())
+                .map_err(Usage)?;
+            let r = alma_ops::progress::report(
+                plan,
+                l.schedule.as_ref().unwrap(),
+                snap.as_ref(),
+                all,
+                Page::new(page.limit, page.cursor.as_deref()),
+            );
+            if json {
+                print_json(&r);
+            } else {
+                let c = r.counts;
+                println!(
+                    "status date {}: {} complete, {} in progress, {} not started; finish {}{}",
+                    r.status_date.as_deref().unwrap_or("(none)"),
+                    c.complete,
+                    c.in_progress,
+                    c.not_started,
+                    r.finish,
+                    match (&r.baseline_finish, r.finish_var) {
+                        (Some(b), Some(v)) => format!(" (baseline {b}, {v:+}d)"),
+                        _ => String::new(),
+                    }
+                );
+                for t in &r.tasks {
+                    let mut line = format!("  {}\t{}", t.id, t.state.replace('_', " "));
+                    if let Some(rem) = &t.remaining {
+                        line.push_str(&format!(", {rem} left"));
+                    }
+                    line.push_str(&format!("\tfinish {}", t.finish));
+                    if let Some(v) = t.finish_var {
+                        line.push_str(&format!(" ({v:+}d)"));
+                    }
+                    if t.late_start {
+                        line.push_str("\tlate to start");
+                    }
+                    if t.critical {
+                        line.push_str("\tcritical");
+                    }
+                    println!("{line}");
+                }
+                if let Some(c) = &r.next_cursor {
+                    println!("more: --cursor {c}");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Progress(c) => {
+            let (op, m) = match c {
+                ProgressCmd::Set {
+                    id,
+                    start,
+                    finish,
+                    remaining,
+                    pct,
+                    cost,
+                    clear,
+                    m,
+                } => (
+                    Op::ProgressSet {
+                        id,
+                        start,
+                        finish,
+                        remaining,
+                        pct,
+                        cost,
+                        clear,
+                    },
+                    m,
+                ),
+                ProgressCmd::Date { date, m } => (Op::ProgressDate { date }, m),
+                ProgressCmd::Ls { .. } => unreachable!("handled above"),
+            };
+            mutation(file, &[op], m.dry_run, json)
+        }
+        Cmd::Evm {
+            baseline,
+            depth,
+            accounts,
+            page,
+        } => {
+            let (path, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let plan = l.plan.as_ref().unwrap();
+            let snap = match alma_ops::baseline::snapshot_for(plan, &path, baseline.as_deref()) {
+                Ok(Some(s)) => s,
+                Ok(None) => {
+                    let d = Diagnostic::error(
+                        "L-EVM-04",
+                        "earned value is measured against a baseline, and the plan has none",
+                    )
+                    .with_hint("save one: `alma baseline save b1`");
+                    return Ok(report_errors(&[d], json));
+                }
+                Err(m) => return Err(Usage(m)),
+            };
+            let which = if accounts {
+                alma_ops::evm::Rows::Accounts
+            } else {
+                alma_ops::evm::Rows::Depth(depth)
+            };
+            let r = match alma_ops::evm::report(
+                plan,
+                l.schedule.as_ref().unwrap(),
+                &snap,
+                which,
+                Page::new(page.limit, page.cursor.as_deref()),
+            ) {
+                Ok(r) => r,
+                Err(d) => return Ok(report_errors(&[d], json)),
+            };
+            if json {
+                print_json(&r);
+            } else {
+                let cur = r.currency.as_deref().unwrap_or("");
+                let opt = |x: Option<f64>| x.map_or("n/a".to_string(), |v| v.to_string());
+                let p = &r.project;
+                println!(
+                    "at {} against {}: BAC {:.2} {cur}, PV {:.2}, EV {:.2}, AC {:.2}",
+                    r.status_date, r.baseline, p.bac, p.pv, p.ev, p.ac
+                );
+                println!(
+                    "  SV {:.2} ({}%), CV {:.2} ({}%), SPI {}, CPI {}, complete {}%",
+                    p.sv,
+                    opt(p.sv_pct),
+                    p.cv,
+                    opt(p.cv_pct),
+                    opt(p.spi),
+                    opt(p.cpi),
+                    opt(p.complete_pct)
+                );
+                let f = &r.forecasts;
+                println!(
+                    "  EAC {} (CPI), {} (CPI×SPI), {:.2} (budget rate); TCPI {}",
+                    opt(f.eac_cpi),
+                    opt(f.eac_cpi_spi),
+                    f.eac_budget_rate,
+                    opt(p.tcpi)
+                );
+                for row in &r.rows {
+                    println!(
+                        "  {} {}\tPV {:.2}\tEV {:.2}\tAC {:.2}\tSPI {}\tCPI {}",
+                        row.wbs.as_deref().unwrap_or(""),
+                        row.id.as_deref().unwrap_or(""),
+                        row.pv,
+                        row.ev,
+                        row.ac,
+                        opt(row.spi),
+                        opt(row.cpi)
+                    );
+                }
+                if !r.removed.is_empty() {
+                    println!("  removed since the baseline: {}", r.removed.join(", "));
+                }
+                if let Some(c) = &r.next_cursor {
+                    println!("more: --cursor {c}");
                 }
             }
             Ok(ExitCode::SUCCESS)
@@ -1608,6 +1929,8 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             format,
             chart,
             resource,
+            iteration,
+            cadence,
             period,
             baseline,
             range,
@@ -1644,6 +1967,8 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 resource,
                 period,
                 baseline,
+                iteration,
+                cadence,
             };
             let bytes: Vec<u8> = match format.as_str() {
                 "svg" => alma_ops::export::svg(plan, s, &req)
@@ -1766,6 +2091,47 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Cmd::Iter(IterCmd::Ls { cadence }) => {
+            let (_, l) = loaded(file)?;
+            let Some(plan) = l.plan.as_ref() else {
+                return Ok(scheduled(&l).unwrap_or(ExitCode::from(1)));
+            };
+            let r = alma_ops::agile::report(plan, cadence.as_deref()).map_err(Usage)?;
+            if json {
+                print_json(&r);
+            } else {
+                for c in &r.cadences {
+                    println!("{} ({}):", c.id, c.name);
+                    for it in &c.iterations {
+                        let cap = it.capacity.map_or(String::new(), |x| format!(" of {x}"));
+                        println!(
+                            "  {}\t{} to {}\t{}\t{} points{cap}, {} done, {} items",
+                            it.id, it.start, it.finish, it.state, it.committed, it.done, it.items
+                        );
+                    }
+                    match (&c.forecast, &c.note) {
+                        (Some(f), _) => println!(
+                            "  velocity {} ({}); {} points left: {} more iterations, finish {}",
+                            f.velocity,
+                            c.velocities
+                                .iter()
+                                .map(f64::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            f.remaining,
+                            f.iterations,
+                            f.finish
+                        ),
+                        (None, Some(n)) => println!("  {n}"),
+                        _ => {}
+                    }
+                }
+                if r.backlog_items > 0 {
+                    println!("backlog: {} stories, {} points", r.backlog_items, r.backlog);
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Iter(c) => {
             let (op, m) = match c {
                 IterCmd::Add {
@@ -1776,6 +2142,7 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                     name,
                     prefix,
                     calendar,
+                    capacity,
                     m,
                 } => (
                     Op::CadenceAdd {
@@ -1786,10 +2153,25 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                         name,
                         prefix,
                         calendar,
+                        capacity,
+                    },
+                    m,
+                ),
+                IterCmd::Set {
+                    id,
+                    pairs,
+                    unset,
+                    m,
+                } => (
+                    Op::CadenceSet {
+                        id,
+                        fields: kv_pairs(&pairs)?,
+                        unset,
                     },
                     m,
                 ),
                 IterCmd::Rm { id, m } => (Op::CadenceRm { id }, m),
+                IterCmd::Ls { .. } => unreachable!("handled above"),
             };
             mutation(file, &[op], m.dry_run, json)
         }
@@ -1868,6 +2250,9 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
         }
         Cmd::Rule(RuleCmd::Set { code, severity, m }) => {
             mutation(file, &[Op::RuleSet { code, severity }], m.dry_run, json)
+        }
+        Cmd::Rule(RuleCmd::Param { name, value, m }) => {
+            mutation(file, &[Op::RuleParam { name, value }], m.dry_run, json)
         }
         Cmd::Keys { table } => {
             let tables: Vec<&str> = {

@@ -11,7 +11,7 @@ use alma_core::diag::Diagnostic;
 use alma_core::duration::Duration;
 use alma_core::model::{
     Calendar, ConstraintKind, CriticalDefinition, DepType, Dist, LagCalendar, LateAnchor, Leveling,
-    Plan, ResourceCalendars, SchedType, TaskKind,
+    Plan, ProgressLogic, ResourceCalendars, SchedType, TaskKind,
 };
 use alma_core::time::{DAY, Instant, start_of};
 use rust_decimal::Decimal;
@@ -19,7 +19,7 @@ use rust_decimal::prelude::ToPrimitive;
 
 use crate::calendar::WorkCalendar;
 pub use crate::level::{Delay, LevelingReport};
-use crate::level::{Early, Leveled, Sgs, level};
+use crate::level::{Early, Leveled, Placement, Sgs, level};
 use crate::resources::Pool;
 
 /// What set a task's early start (F-SCH-11).
@@ -51,6 +51,73 @@ pub enum Driver {
         /// The task holding the resource.
         by: usize,
     },
+    /// The recorded actual start (ADR 0018).
+    Actual,
+    /// Work not started yet cannot start before the status date (ADR 0018).
+    StatusDate,
+    /// A story spans its iteration (ADR 0021).
+    Iteration,
+    /// A story in no iteration: backlog, with no dates of its own.
+    Backlog,
+}
+
+/// Progress of a task at the status date (ADR 0018).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Progress {
+    /// No actual start: scheduled by logic, not before the status date.
+    #[default]
+    NotStarted,
+    /// Started, not finished: the start is fixed; the remaining work runs from `resume`.
+    InProgress {
+        /// End of the work done so far: the end of the status date, or the actual start
+        /// when there is no status date.
+        done_until: Instant,
+        /// Start of the remaining work.
+        resume: Instant,
+        /// Remaining work, in working minutes on the task calendar (elapsed minutes for
+        /// an elapsed duration).
+        remaining: i64,
+        /// Working time passes between the work done and `resume`: the task sits idle,
+        /// waiting for a predecessor (retained logic).
+        waits: bool,
+    },
+    /// Finished: both dates are actual.
+    Complete,
+}
+
+impl Progress {
+    /// True once the task has started.
+    pub fn started(self) -> bool {
+        !matches!(self, Progress::NotStarted)
+    }
+}
+
+impl TaskDates {
+    /// The intervals in which the task works: one span, or two for a task in progress whose
+    /// remaining work does not resume right after the work done (ADR 0018).
+    pub fn work_spans(&self) -> Vec<(Instant, Instant)> {
+        work_spans(self.es, self.ef, self.progress)
+    }
+}
+
+/// See [`TaskDates::work_spans`].
+pub(crate) fn work_spans(es: Instant, ef: Instant, progress: Progress) -> Vec<(Instant, Instant)> {
+    match progress {
+        Progress::InProgress {
+            done_until,
+            resume,
+            waits: true,
+            ..
+        } if ef > resume => {
+            let mut v = Vec::with_capacity(2);
+            if done_until > es {
+                v.push((es, done_until));
+            }
+            v.push((resume, ef));
+            v
+        }
+        _ => vec![(es, ef)],
+    }
 }
 
 /// Computed dates and floats for one task. Floats are working minutes on the task's calendar.
@@ -76,6 +143,8 @@ pub struct TaskDates {
     pub duration: Duration,
     /// True for leaf tasks in the logic network.
     pub in_network: bool,
+    /// Progress at the status date.
+    pub progress: Progress,
 }
 
 /// The result of scheduling a plan. `tasks` is parallel to `plan.tasks`.
@@ -215,7 +284,7 @@ pub fn expected_minutes(o: i64, m: i64, p: i64, dist: Dist) -> i64 {
 pub fn resolve_duration(plan: &Plan, i: usize) -> Duration {
     let t = &plan.tasks[i];
     match t.kind {
-        TaskKind::Milestone | TaskKind::Loe => return Duration::ZERO,
+        TaskKind::Milestone | TaskKind::Loe | TaskKind::Story => return Duration::ZERO,
         TaskKind::Task | TaskKind::Buffer => {}
     }
     if t.sched_type == SchedType::FixedEffort
@@ -373,9 +442,35 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
     let cals = Calendars::new(plan);
     let mut diagnostics = Vec::new();
 
-    let durations: Vec<Duration> = (0..n).map(|i| resolve_duration(plan, i)).collect();
+    // A story planned in an iteration is fixed to its window, like a must-start-on task, so
+    // links on its container follow the iterations (ADR 0021). A backlog story is out of the
+    // network.
+    let windows: HashMap<String, (Instant, Instant)> = crate::agile::iterations(plan, &cals)
+        .into_iter()
+        .map(|it| (it.id, (it.start, it.end)))
+        .collect();
+    let story_window = |i: usize| -> Option<(Instant, Instant)> {
+        let t = &plan.tasks[i];
+        if t.kind != TaskKind::Story || index.is_summary(i) {
+            return None;
+        }
+        t.iteration.as_ref().and_then(|it| windows.get(it)).copied()
+    };
+    let durations: Vec<Duration> = (0..n)
+        .map(|i| match story_window(i) {
+            Some((a, b)) => Duration::working(cals.of_task(plan, i).between(a, b)),
+            None => resolve_duration(plan, i),
+        })
+        .collect();
     let in_network: Vec<bool> = (0..n)
-        .map(|i| !index.is_summary(i) && plan.tasks[i].kind != TaskKind::Loe)
+        .map(|i| {
+            !index.is_summary(i)
+                && match plan.tasks[i].kind {
+                    TaskKind::Loe => false,
+                    TaskKind::Story => story_window(i).is_some(),
+                    _ => true,
+                }
+        })
         .collect();
 
     // Expand links over summaries; `edges` is in (owner, dep, pred leaf, succ leaf) order.
@@ -483,6 +578,111 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
 
     let project_start = cals.project().next_start(start_of(plan.project.start));
 
+    // Progress (ADR 0018). Work not started cannot start before the data date: the first
+    // working minute after the status date.
+    let status = plan.project.status_date;
+    let data_at = |i: usize| status.map(|d| cals.of_task(plan, i).next_start(start_of(d) + DAY));
+    let dur_add_d = |i: usize, t: Instant, d: Duration| -> Instant {
+        if d.elapsed {
+            t + d.minutes
+        } else {
+            cals.of_task(plan, i).add(t, d.minutes)
+        }
+    };
+    let dur_sub_d = |i: usize, t: Instant, d: Duration| -> Instant {
+        if d.elapsed {
+            t - d.minutes
+        } else {
+            cals.of_task(plan, i).sub(t, d.minutes)
+        }
+    };
+    // Dates of a task with progress, given the early dates of its predecessors: `None` for a
+    // task that has not started.
+    let place =
+        |j: usize, es: &[Instant], ef: &[Instant]| -> Option<(Instant, Instant, Progress)> {
+            let t = &plan.tasks[j];
+            if let Some((a, b)) = story_window(j) {
+                let p = if t.actual_finish.is_some() {
+                    Progress::Complete
+                } else if t.actual_start.is_some() {
+                    Progress::InProgress {
+                        done_until: a,
+                        resume: a,
+                        remaining: 0,
+                        waits: false,
+                    }
+                } else {
+                    Progress::NotStarted
+                };
+                return Some((a, b, p));
+            }
+            if !t.has_progress() {
+                return None;
+            }
+            if t.kind == TaskKind::Milestone {
+                // A milestone reached on a day sits at its first working minute, as with MSO.
+                let day = t.actual_finish.or(t.actual_start)?;
+                let at = date_start(j, day);
+                return Some((at, at, Progress::Complete));
+            }
+            let start = date_start(j, t.actual_start?);
+            if let Some(f) = t.actual_finish {
+                return Some((start, date_end(j, f).max(start), Progress::Complete));
+            }
+            let cal = cals.of_task(plan, j);
+            let full = durations[j];
+            let (done_until, floor) = match status {
+                Some(d) => (
+                    cal.prev_end(start_of(d) + DAY).max(start),
+                    cal.next_start(start_of(d) + DAY).max(start),
+                ),
+                None => (start, start),
+            };
+            let left = t.remaining.unwrap_or_else(|| {
+                let worked = if full.elapsed {
+                    done_until - start
+                } else {
+                    cal.between(start, done_until)
+                };
+                Duration {
+                    minutes: (full.minutes - worked).max(0),
+                    elapsed: full.elapsed,
+                }
+            });
+            let mut resume = floor;
+            if plan.settings.progress_logic == ProgressLogic::RetainedLogic {
+                // The remaining work still honors every link, as if it were a task of its own.
+                for &e in &incoming[j] {
+                    let edge = &edges[e];
+                    let term = match edge.kind {
+                        DepType::Fs => lag_add(edge, ef[edge.pred]),
+                        DepType::Ss => lag_add(edge, es[edge.pred]),
+                        DepType::Ff => dur_sub_d(j, lag_add(edge, ef[edge.pred]), left),
+                        DepType::Sf => dur_sub_d(j, lag_add(edge, es[edge.pred]), left),
+                    };
+                    resume = resume.max(term);
+                }
+            }
+            let finish = if left.minutes == 0 {
+                done_until
+            } else {
+                resume = cal.next_start(resume);
+                dur_add_d(j, resume, left)
+            };
+            let waits =
+                left.minutes > 0 && resume > done_until && cal.between(done_until, resume) > 0;
+            Some((
+                start,
+                finish,
+                Progress::InProgress {
+                    done_until,
+                    resume,
+                    remaining: left.minutes,
+                    waits,
+                },
+            ))
+        };
+
     // The earliest start that logic and constraints allow (F-SCH-06), before snapping.
     let earliest = |j: usize, es: &[Instant], ef: &[Instant]| -> (Instant, Driver) {
         let mut best = start_of(plan.project.start);
@@ -533,6 +733,12 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
                 _ => {}
             }
         }
+        if let Some(data) = data_at(j)
+            && data > best
+        {
+            best = data;
+            why = Driver::StatusDate;
+        }
         let snap = durations[j].minutes > 0 || !matches!(why, Driver::Dep { .. });
         let start = if snap {
             cals.of_task(plan, j).next_start(best)
@@ -546,7 +752,19 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
     let mut es = vec![project_start; n];
     let mut ef = vec![project_start; n];
     let mut driver = vec![Driver::ProjectStart; n];
+    let mut progress = vec![Progress::NotStarted; n];
     for &j in &order {
+        if let Some((start, finish, p)) = place(j, &es, &ef) {
+            es[j] = start;
+            ef[j] = finish;
+            driver[j] = if plan.tasks[j].kind == TaskKind::Story {
+                Driver::Iteration
+            } else {
+                Driver::Actual
+            };
+            progress[j] = p;
+            continue;
+        }
         let (start, why) = earliest(j, &es, &ef);
         es[j] = start;
         ef[j] = dur_add(j, start);
@@ -567,6 +785,7 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
     // Backward pass (F-SCH-07) and floats (F-SCH-08, F-SCH-09) over given early dates.
     let late = |es: &[Instant],
                 ef: &[Instant],
+                progress: &[Progress],
                 order: &[usize],
                 edges: &[Edge],
                 outgoing: &[Vec<usize>]|
@@ -612,11 +831,49 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
                 best
             };
             ls[i] = dur_sub(i, lf[i]);
+            match progress[i] {
+                Progress::NotStarted => {}
+                // Done work has no late dates of its own.
+                Progress::Complete => {
+                    ls[i] = es[i];
+                    lf[i] = ef[i];
+                }
+                // The late start is that of the remaining work.
+                Progress::InProgress { remaining, .. } => {
+                    let left = Duration {
+                        minutes: remaining,
+                        elapsed: durations[i].elapsed,
+                    };
+                    ls[i] = dur_sub_d(i, lf[i], left);
+                }
+            }
         }
         let mut total = vec![None; n];
         let mut free = vec![None; n];
         for &i in order {
             let cal = cals.of_task(plan, i);
+            match progress[i] {
+                Progress::Complete => continue,
+                Progress::InProgress { .. } => {
+                    // Only the finish can still move.
+                    let tf = cal.between(ef[i], lf[i]);
+                    total[i] = Some(tf);
+                    let mut ff = tf;
+                    for &e in &outgoing[i] {
+                        let edge = &edges[e];
+                        if matches!(edge.kind, DepType::Fs | DepType::Ff) {
+                            let to = match edge.kind {
+                                DepType::Fs => es[edge.succ],
+                                _ => ef[edge.succ],
+                            };
+                            ff = ff.min(cal.between(ef[i], lag_sub(edge, to)));
+                        }
+                    }
+                    free[i] = Some(ff.min(tf).max(0));
+                    continue;
+                }
+                Progress::NotStarted => {}
+            }
             total[i] = Some(cal.between(es[i], ls[i]).min(cal.between(ef[i], lf[i])));
             let mut ff = if outgoing[i].is_empty() {
                 cal.between(ef[i], anchor)
@@ -648,7 +905,7 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
             free,
         }
     };
-    let mut lt = late(&es, &ef, &order, &edges, &outgoing);
+    let mut lt = late(&es, &ef, &progress, &order, &edges, &outgoing);
 
     // Resource leveling or smoothing (SPEC.md §7.4, ADR 0011): a serial schedule generation
     // pass over the logic network, in priority order, that delays tasks until their resources
@@ -681,9 +938,17 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
                     ef: &mut ef,
                     driver: &mut driver,
                 },
-                &earliest,
-                &dur_add,
+                &Placement {
+                    earliest: &earliest,
+                    dur_add: &dur_add,
+                    place: &place,
+                },
             );
+            for &j in &order {
+                if let Some((_, _, p)) = place(j, &es, &ef) {
+                    progress[j] = p;
+                }
+            }
             // A delayed task now depends on the task that held its resource: add that as a
             // finish-to-start link for the backward pass, so float and the critical path
             // account for resources (the resource-constrained critical path; ADR 0011).
@@ -700,7 +965,7 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
                     dep: usize::MAX,
                 });
             }
-            lt = late(&es, &ef, &placed, &all_edges, &all_out);
+            lt = late(&es, &ef, &progress, &placed, &all_edges, &all_out);
             leveling = Some(LevelingReport {
                 mode: plan.settings.leveling,
                 unleveled_finish,
@@ -747,6 +1012,7 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
                 Duration::ZERO
             },
             in_network: in_network[i],
+            progress: progress[i],
         })
         .collect();
 
@@ -769,6 +1035,25 @@ pub fn schedule(plan: &Plan) -> Result<Schedule, Vec<Diagnostic>> {
             d.total_float = None;
             d.free_float = None;
         }
+    }
+    // Backlog stories have no dates: they sit at the project start, out of roll-ups.
+    for (i, t) in plan.tasks.iter().enumerate() {
+        if t.kind != TaskKind::Story || index.is_summary(i) || in_network[i] {
+            continue;
+        }
+        let d = &mut tasks[i];
+        d.es = project_start;
+        d.ls = project_start;
+        d.ef = project_start;
+        d.lf = project_start;
+        d.driver = Driver::Backlog;
+        d.total_float = None;
+        d.free_float = None;
+        d.progress = if t.actual_finish.is_some() {
+            Progress::Complete
+        } else {
+            Progress::NotStarted
+        };
     }
     roll_up(plan, &index, &mut tasks, false);
 
@@ -795,6 +1080,7 @@ fn roll_up(plan: &Plan, index: &PlanIndex, tasks: &mut [TaskDates], network_only
             .leaves(i)
             .into_iter()
             .filter(|&l| !network_only || tasks[l].in_network)
+            .filter(|&l| tasks[l].driver != Driver::Backlog)
             .collect();
         if leaves.is_empty() {
             continue;

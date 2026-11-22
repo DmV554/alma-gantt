@@ -35,14 +35,14 @@ macro_rules! keys {
 /// Every key, grouped by table. Order inside a table is the canonical key order.
 pub const KEYS: &[KeyDef] = keys! {
     "top" => [
-        "project": A, "settings": A, "rules": A, "calendar": A, "resource": A, "cadence": B,
+        "project": A, "settings": A, "rules": A, "calendar": A, "resource": A, "cadence": A,
         "task": A, "release": R("M4"), "reserve": A, "risk": A, "funding": A,
         "contract": R("M3"), "scenario": R("M2"), "cashflow_item": R("M2"),
         "baseline": A, "ucp": R("a later milestone"),
     ],
     "project" => [
         "format": A, "name": A, "start": A, "calendar": A, "deadline": A, "currency": A,
-        "description": B, "status_date": R("M4"), "estimate_class": R("M2"), "fx": R("M2"),
+        "description": B, "status_date": A, "estimate_class": R("M2"), "fx": R("M2"),
     ],
     "settings" => ["schedule": A, "cost": R("M2")],
     "settings.schedule" => [
@@ -50,7 +50,7 @@ pub const KEYS: &[KeyDef] = keys! {
         "critical_threshold": A, "near_critical": A, "lag_calendar": A, "phase": A,
         "reporting_period": B, "rolling_wave_horizon": B, "three_point": A,
         "leveling": A, "resource_calendars": A,
-        "progress_logic": R("M4"), "agile_drives": R("M4"), "control_threshold": R("M4"),
+        "progress_logic": A, "agile_drives": R("M4"),
     ],
     "rules" => ["severity": A, "params": A],
     "reserve" => [
@@ -76,9 +76,9 @@ pub const KEYS: &[KeyDef] = keys! {
         "assumptions": B, "references": B, "sched_type": A, "duration": A, "effort": A,
         "estimate": A, "calendar": A, "constraint": A, "deadline": A, "spans": A, "reserve": A,
         "deps": A, "assign": A, "fixed_cost": A, "allow": A, "tags": B, "custom": B,
-        "actual_start": R("M4"), "actual_finish": R("M4"), "remaining": R("M4"),
-        "physical_pct": R("M4"), "progress_rule": R("M4"), "ev_method": R("M4"),
-        "points": R("M4"), "iteration": R("M4"), "crash": R("M3"), "overlap": R("M3"),
+        "actual_start": A, "actual_finish": A, "remaining": A, "physical_pct": A,
+        "ev_method": A, "actual_cost": A,
+        "points": A, "iteration": A, "crash": R("M3"), "overlap": R("M3"),
         "risk_ref": R("M2"), "payment": R("M2"), "payment_ref": R("M2"),
         "requirement_refs": R("M2"), "contract": R("M3"), "account_code": R("M2"),
         "org_unit": R("M2"), "effort_type": R("M2"), "apportion_to": R("M2"),
@@ -104,7 +104,8 @@ pub const KEYS: &[KeyDef] = keys! {
     ],
     "resource.rate" => ["amount": B, "per": B],
     "cadence" => [
-        "id": B, "name": B, "prefix": B, "start": B, "length": B, "count": B, "calendar": B,
+        "id": A, "name": A, "prefix": A, "start": A, "length": A, "count": A, "calendar": A,
+        "capacity": A,
     ],
 };
 

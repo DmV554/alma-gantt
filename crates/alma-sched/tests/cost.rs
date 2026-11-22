@@ -45,6 +45,7 @@ fn plan(tasks: Vec<Task>, resources: Vec<Resource>) -> Plan {
             deadline: None,
             currency: Some("UF".into()),
             description: None,
+            status_date: None,
         },
         settings: ScheduleSettings::default(),
         rules: RuleConfig::default(),

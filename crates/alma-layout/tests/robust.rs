@@ -85,6 +85,7 @@ fn arb_case() -> impl Strategy<Value = Case> {
                         length: Duration::working(len * DAY),
                         count,
                         calendar: None,
+                        capacity: None,
                     }]
                 })
                 .unwrap_or_default();
@@ -96,6 +97,7 @@ fn arb_case() -> impl Strategy<Value = Case> {
                     deadline: None,
                     currency: None,
                     description: None,
+                    status_date: None,
                 },
                 settings: ScheduleSettings::default(),
                 rules: RuleConfig::default(),

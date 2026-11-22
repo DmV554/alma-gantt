@@ -44,6 +44,20 @@ fields as `alma schema`). Every tool takes an optional `file`; mutations take `d
    `alma variance --changed` shows what slipped or got more expensive, and `alma scurve`
    shows planned value next to the forecast. Baselines are never overwritten: a revision is a
    new id with `--change CR-…`. Commit `.alma/baselines/` with the plan.
+8. Track progress. At each report date run `alma progress date YYYY-MM-DD`, then record
+   facts per task: `alma progress set <id> --start D` when it started, `--finish D` when it
+   finished, `--remaining 3d` when the work left differs from duration minus the working
+   days since the start. Started work stays at its actual dates; everything else is
+   rescheduled after the status date. `alma progress ls` shows what is moving, what is late to
+   start, and the forecast finish against the baseline.
+9. Measure earned value. Record how much of each started task is physically done
+   (`--pct 40`) and what was spent (`--cost 1200`, on tasks or on control accounts). Then run
+   `alma evm`. It reports PV, EV, AC, SPI, CPI, EAC and TCPI for the project and per WBS node,
+   and `alma check` warns when a variance crosses the control thresholds (`L-EVM-01`).
+10. When an approved change alters the plan after work has started, use `alma baseline revise
+   b2 --change CR-…`, not `save`. It keeps the planned value already reported and takes the
+   current plan from the status date on. A `save` after progress rewrites the past
+   (`L-BAS-06`).
 
 For many changes at once, write the operations to a file and run `alma apply ops.json`
 (all or nothing). `alma schema` prints the JSON Schema of operations.
@@ -72,7 +86,9 @@ alma cal except <calendar> --name "Holiday" --from 2027-09-17 [--to 2027-09-20] 
 alma project set [--calendar ID] [--deadline 2027-12-10] [--name "..."]
 alma settings set key=value ... [--unset key]   # [settings.schedule]: hours_per_day, phase, …
 alma rule set L-WBS-05 off|info|warn|error      # this plan only; prefer `allow` per task
-alma iter add sprints --prefix s --start 2027-04-05 --length 10d --repeat 12   # s01..s12
+alma iter add sprints --prefix s --start 2027-04-05 --length 10d --repeat 12 [--capacity 30]
+alma iter set sprints capacity=30 [count=14]   # s01..s12; capacity is points per sprint
+alma iter ls [--cadence sprints]         # committed and done points, velocity, forecast finish
 alma iter rm sprints
 alma apply ops.json | -                  # batch (JSON array or JSON lines)
 alma fmt [--check]                       # canonical layout; comments kept
@@ -82,6 +98,8 @@ alma export gantt.svg | plan.csv | - --format csv
 alma export dev.png --chart histogram --resource dev [--period week]   # demand vs capacity
 alma export curve.png --chart scurve [--period month] [--baseline b1]  # forecast vs planned
 alma export costs.xlsx [--period month]  # workbook: cost per period, tasks, resources, risks
+alma export burn.png --chart burndown --iteration s03   # points left per day vs ideal
+alma export up.png --chart burnup [--cadence sprints]   # points done and planned vs scope
 
 alma check [--min warn] [--limit N --cursor C]
 alma ls [--parent P] [--critical] [--kind milestone] [--fields id,name,start,finish,tf]
@@ -101,8 +119,15 @@ alma funding add <id> --date 2027-01-01 --amount 2000 [--source "Client advance"
 alma funding rm <id>
 alma scurve [--period month] [--csv] [--baseline b1]   # forecast and planned value per period
 alma baseline save <id> [--name "..."] [--change CR-12] [--reason "..."] [--date 2027-01-04]
+alma baseline revise <id> --change CR-12 [--reason "..."] [--approved-by "..."] [--from b1]
 alma baseline ls
 alma variance [--baseline b1] [--changed] [--limit N]   # dates and cost vs the baseline
+alma progress date 2027-03-31            # the status date: progress is measured through it
+alma progress set <id> [--start D] [--finish D] [--remaining 3d] [--pct 40] [--cost 1200]
+               [--clear]
+alma progress ls [--all] [--baseline b1] # started, finished, late to start; forecast finish
+alma evm [--depth 2 | --accounts] [--baseline b1]   # earned value at the status date
+alma rule param cv_threshold 15          # control thresholds and other rule parameters
 alma diff [--rev HEAD | --against old.alma.toml]   # what moved since then
 alma keys [task|project|calendar|resource|cadence|task.deps|task.estimate ...]   # field reference
 alma schema
@@ -129,13 +154,30 @@ alma guide
 - `kind`: `task` (default), `milestone`, `loe` (level of effort), `buffer` (time reserve).
   A task with children is a summary; do not give it a `kind`.
 - `wbs_role`: `deliverable`, `control_account`, `work_package`, `planning_package`.
+- Progress: dates are facts on leaf tasks (not summaries, not level of effort). A milestone is
+  reached with `--finish D` alone. Work started out of sequence keeps waiting for its
+  unfinished predecessors (`progress_logic = "retained_logic"`); `alma settings set
+  progress_logic=progress_override` lets it run from the status date instead.
+- Earned value: a task earns its baseline budget as it progresses. `ev_method` sets how:
+  - `physical` (default): `physical_pct`, measured on the work, not on elapsed time;
+  - a fixed formula: `--field ev_method=0/100`, `50/50` or `20/80`.
+
+  Level-of-effort tasks earn as planned, and reserves are not earned. EVM needs a status date
+  and a baseline saved by this version: `alma baseline save` (snapshot format 1).
+- Agile work: under an `iterative` container, add stories:
+  `task add st-12 --parent app --kind story --field points=5 --field iteration=s03`.
+  - A story has no duration and no links. It spans its sprint, or sits in the backlog without
+    an `iteration`.
+  - Mark a story done with `progress set st-12 --finish D`.
+  - Link predictive work to the container, not to stories: a milestone after the container
+    waits for its last planned sprint.
+  - `iter ls` gives velocity per team and a forecast; never add velocities of different
+    cadences.
 - Contract dates: use `--deadline` on the milestone, not a hard constraint. A missed deadline
   shows as negative float (`L-SCH-05`) without moving the task.
 
 ## Things alma does not do yet
 
-- Tasks cannot be linked to a sprint (`iteration` is reserved for M4). To align work with
-  sprints, start it with `--constraint SNET:<sprint start>` or link it to a milestone.
 - A resource has one capacity (`--max`) for the whole project. For a team that grows or
   shrinks, use two resources. A resource with its own calendar (`res set ID --calendar CAL`)
   limits the tasks it works on to the time both calendars share.

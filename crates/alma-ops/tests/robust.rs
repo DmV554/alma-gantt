@@ -269,6 +269,36 @@ fn arb_op() -> impl Strategy<Value = Op> {
                 fields: fields(&[(k, v)]),
                 unset: Vec::new(),
             }),
+        (
+            any::<usize>(),
+            proptest::option::of(1u32..28),
+            proptest::option::of(1u32..28),
+            proptest::option::of(prop_oneof![Just("2d"), Just("0d"), Just("x")]),
+            (
+                proptest::option::of(prop_oneof![Just("40"), Just("100"), Just("140")]),
+                proptest::option::of(prop_oneof![Just("120.5"), Just("-3"), Just("y")]),
+            ),
+            any::<bool>(),
+        )
+            .prop_map(|(t, s, f, r, (pct, cost), clear)| Op::ProgressSet {
+                id: id(t),
+                start: s.map(|d| format!("2027-02-{d:02}")),
+                finish: f.map(|d| format!("2027-03-{d:02}")),
+                remaining: r.map(str::to_string),
+                pct: pct.map(str::to_string),
+                cost: cost.map(str::to_string),
+                clear,
+            }),
+        (
+            prop_oneof![Just("cv_threshold"), Just("finish_slip"), Just("Bad")],
+            prop_oneof![Just("15"), Just("5d"), Just("x")],
+        )
+            .prop_map(|(n, v)| Op::RuleParam {
+                name: n.into(),
+                value: v.into(),
+            }),
+        prop_oneof![Just("2027-03-15"), Just("2027-13-01")]
+            .prop_map(|d| Op::ProgressDate { date: d.into() }),
         (1u32..5).prop_map(|c| Op::CadenceAdd {
             id: "team-b".into(),
             start: "2027-05-03".into(),
@@ -277,7 +307,18 @@ fn arb_op() -> impl Strategy<Value = Op> {
             name: None,
             prefix: Some("b".into()),
             calendar: None,
+            capacity: Some("30".into()),
         }),
+        (
+            prop_oneof![Just("team-b"), Just("nope")],
+            prop_oneof![Just("capacity"), Just("count"), Just("id")],
+            prop_oneof![Just("25"), Just("6"), Just("x")],
+        )
+            .prop_map(|(c, k, v)| Op::CadenceSet {
+                id: c.into(),
+                fields: fields(&[(k, v)]),
+                unset: Vec::new(),
+            }),
     ]
 }
 

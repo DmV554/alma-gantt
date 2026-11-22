@@ -22,7 +22,7 @@ use alma_core::model::{ConstraintKind, Leveling, Plan};
 use alma_core::time::Instant;
 use rust_decimal::Decimal;
 
-use crate::cpm::{Calendars, Driver, Edge};
+use crate::cpm::{Calendars, Driver, Edge, work_spans};
 use crate::resources::{Booking, Pool};
 
 /// What leveling did to the schedule.
@@ -76,6 +76,18 @@ pub(crate) struct Early<'a> {
 /// The logic-only earliest start of a task given the current early dates, and its driver.
 pub(crate) type Earliest<'a> = dyn Fn(usize, &[Instant], &[Instant]) -> (Instant, Driver) + 'a;
 
+/// Dates of a task with progress, which leveling never moves (ADR 0018).
+pub(crate) type Place<'a> =
+    dyn Fn(usize, &[Instant], &[Instant]) -> Option<(Instant, Instant, crate::cpm::Progress)> + 'a;
+
+/// How the scheduler places one task: its logic start, its finish from a start, and the dates
+/// of started work.
+pub(crate) struct Placement<'a> {
+    pub(crate) earliest: &'a Earliest<'a>,
+    pub(crate) dur_add: &'a dyn Fn(usize, Instant) -> Instant,
+    pub(crate) place: &'a Place<'a>,
+}
+
 /// Result of the pass.
 pub(crate) struct Leveled {
     /// Delayed tasks, source order.
@@ -94,13 +106,27 @@ pub(crate) fn level(
     pool: &Pool,
     net: &Sgs<'_>,
     early: &mut Early<'_>,
-    earliest: &Earliest<'_>,
-    dur_add: &dyn Fn(usize, Instant) -> Instant,
+    how: &Placement<'_>,
 ) -> Leveled {
+    let Placement {
+        earliest,
+        dur_add,
+        place,
+    } = *how;
     let smoothing = plan.settings.leveling == Leveling::Smoothing;
     let unleveled_es: Vec<Instant> = early.es.to_vec();
     let mut indegree: Vec<usize> = net.incoming.iter().map(Vec::len).collect();
-    let key = |j: usize| Reverse((net.total[j].unwrap_or(0), net.lf[j], j));
+    // Started work is a fact: it books its resources before anything else is placed.
+    let key = |j: usize| {
+        let t = &plan.tasks[j];
+        let first = t.actual_start.is_some() || t.actual_finish.is_some();
+        let tf = if first {
+            i64::MIN
+        } else {
+            net.total[j].unwrap_or(0)
+        };
+        Reverse((tf, net.lf[j], j))
+    };
     let mut ready: BinaryHeap<Reverse<(i64, Instant, usize)>> = net
         .order
         .iter()
@@ -114,6 +140,36 @@ pub(crate) fn level(
 
     while let Some(Reverse((_, _, j))) = ready.pop() {
         placed.push(j);
+        if let Some((start, finish, progress)) = place(j, early.es, early.ef) {
+            // Started work stays where it happened; it still holds its resources.
+            early.es[j] = start;
+            early.ef[j] = finish;
+            early.driver[j] = if plan.tasks[j].kind == alma_core::model::TaskKind::Story {
+                Driver::Iteration
+            } else {
+                Driver::Actual
+            };
+            for (a, b) in work_spans(start, finish, progress) {
+                if b > a {
+                    for &(r, units) in &pool.assigned[j] {
+                        book[r].push(Booking {
+                            start: a,
+                            end: b,
+                            units,
+                            task: j,
+                        });
+                    }
+                }
+            }
+            for &e in &net.outgoing[j] {
+                let s = net.edges[e].succ;
+                indegree[s] -= 1;
+                if indegree[s] == 0 {
+                    ready.push(key(s));
+                }
+            }
+            continue;
+        }
         let (logic, logic_why) = earliest(j, early.es, early.ef);
         let mut start = logic;
         let mut why = logic_why;

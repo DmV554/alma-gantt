@@ -127,7 +127,8 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 | `deadline` | A | date | none | Project deadline; the backward pass anchor when `late_anchor = "deadline"` |
 | `currency` | A | string | none | Currency label for money values (`"UF"`, `"USD"`), shown by cost reports |
 | `description` | B | string | none | Narrative, exported with reports |
-| `status_date`, `estimate_class`, `fx` | R (M4/M2) | | | |
+| `status_date` | A | date | none | Data date: progress is reported through the end of this day. Work not started is scheduled after it (ADR 0018) |
+| `estimate_class`, `fx` | R (M2) | | | |
 
 ### `[settings.schedule]`
 | Key | Tier | Type | Default | Meaning |
@@ -145,7 +146,8 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 | `three_point` | A | `beta \| triangular` | `beta` | Formula for tE (F-SCH-03/04) |
 | `leveling` | A | `off \| smoothing \| leveling` | `off` | How the scheduler resolves resource over-allocation (ADR 0011). `smoothing` delays tasks within their free float only; `leveling` may move the finish date |
 | `resource_calendars` | A | `intersect \| ignore` | `intersect` | With `intersect`, a task assigned to a resource that has its own `calendar` works only when both calendars do (ADR 0017); no shared working time is `L-RES-03` |
-| `progress_logic`, `agile_drives`, `control_threshold` | R (M4) | | | |
+| `progress_logic` | A | `retained_logic \| progress_override` | `retained_logic` | How the remaining work of a started task is scheduled. `retained_logic`: it still waits for its unfinished predecessors. `progress_override`: once started, its links no longer hold it back (ADR 0018) |
+| `agile_drives` | R (M4) | | | |
 
 `[settings.cost]` is reserved (R, M2).
 
@@ -158,6 +160,10 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 max_lag = "10d"
 ```
 - Only `L-*` codes can be configured. `E-*` codes are always errors (§9).
+- Parameters: `max_lag` (`L-DEP-11`), `emv_tolerance` (`L-RISK-02`), `finish_slip`
+  (duration, default `"5d"`, `L-BAS-03`), `cv_threshold` and `sv_threshold` (percent, default
+  `10`, `L-EVM-01`), `tcpi_max` (default `1.1`, `L-EVM-05`), `change_threshold` (money, no
+  default, `L-BAS-09`). Set them with `alma rule param`.
 - A single node can silence a rule with `allow = ["L-DEP-02"]` (task key, tier A). Prefer
   `allow` over turning a rule off for the whole plan.
 
@@ -182,7 +188,7 @@ Per-weekday hours and per-resource exceptions are reserved for M2 (keys `week`, 
 | 1 | `id` | A | id | Required |
 | 2 | `parent` | A | task id | Omitted at WBS level 1 |
 | 3 | `name` | A | string | Required |
-| 4 | `kind` | A | `task \| milestone \| loe \| buffer` | Scheduling shape. Default `task`. A node with children is a summary; `kind` on a summary is `E-FMT-03` |
+| 4 | `kind` | A | `task \| milestone \| loe \| buffer \| story` | Scheduling shape. Default `task`. A node with children is a summary; `kind` on a summary is `E-FMT-03`. A `story` is a backlog item: no duration or links; its dates are its iteration's (§6.14) |
 | 5 | `wbs_role` | A | `deliverable \| control_account \| work_package \| planning_package` | Scope meaning (D4). Omitted on activities. A leaf `work_package` with a `duration` is valid: it is scheduled directly, with no activities under it |
 | 6 | `approach` | A | `predictive \| iterative \| flow` | Inherited by descendants; the project default is `predictive`. Changes which lint rules apply |
 | 7 | `class` | A | `contractual \| internal \| external` | Milestones only (D5). `external` = an event owned by a third party |
@@ -229,8 +235,7 @@ Per-weekday hours and per-resource exceptions are reserved for M2 (keys `week`, 
 | 28 | `tags` | B | array of strings | |
 | 29 | `custom` | B | table | Free-form fields (§3.4) |
 
-Reserved on tasks (R): `actual_start`, `actual_finish`, `remaining`, `physical_pct`,
-`progress_rule`, `ev_method` (M4); `points`, `iteration`, `kind = story \| epic` (M4); `crash`,
+Reserved on tasks (R): `crash`,
 `overlap` (M3+); `risk_ref`, `payment`, `payment_ref`, `requirement_refs`, `contract`,
 `account_code`, `org_unit`, `effort_type`, `apportion_to`, `location` (M2+).
 
@@ -248,7 +253,7 @@ Reserved (R, M2): `parent`, `category`, `skills`, `org_unit`, `availability`,
 `available_from`, `available_to`, `rates`, `bill_rate`. Assignment keys `work`, `quantity`,
 `profile` are reserved as well.
 
-### 6.7 `[[cadence]]` (tier B)
+### 6.7 `[[cadence]]` (tier A)
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `id` | id | required | |
@@ -258,9 +263,11 @@ Reserved (R, M2): `parent`, `category`, `skills`, `org_unit`, `availability`,
 | `length` | duration | required | Working time on `calendar` |
 | `count` | integer ≥ 1 | required | |
 | `calendar` | calendar id | project calendar | |
+| `capacity` | number | none | Points the team can take on per iteration; more committed is `L-AGL-07` (ADR 0021) |
 
-Generated iteration ids join the global id namespace. Per-iteration overrides, `[[release]]`,
-capacity and velocity are reserved (R, M4).
+Generated iteration ids join the global id namespace. Each iteration starts at the first working
+minute after the previous one ends. Per-iteration overrides and `[[release]]` are reserved
+(R, M4).
 
 ### 6.8 Other reserved top-level items (R)
 `[[release]]` (M4), `[[contract]]` (M3),
@@ -269,7 +276,8 @@ capacity and velocity are reserved (R, M4).
 ### 6.9 `[[baseline]]` (tier A)
 Metadata of a saved baseline (D14, ADR 0013). `alma baseline save` writes it together with the
 frozen dates and costs, which go to `.alma/baselines/<plan>/<id>.toml` next to the plan file.
-Commit that directory with the plan.
+Commit that directory with the plan. Snapshots are format 1 since ADR 0019: they add each task's own budget
+and planned value curve, which earned value needs. Format 0 snapshots are still read.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -325,6 +333,34 @@ any day is `L-COST-04` (a warning while `phase = "draft"`, an error after).
 | `amount` | money string | required | |
 | `source` | string | none | Client advance, loan, grant… |
 
+### 6.13 `[[task]]`: progress (tier A)
+Progress recorded at `[project] status_date` (ADR 0018). Only leaf tasks that are not level of
+effort take these keys. Dates are facts: the scheduler fixes a started task at its
+`actual_start`, and a finished one at both dates. It schedules work not started, and the
+remaining work of a task in progress, from the first working minute after the status date.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `actual_start` | date | none | Day work started (its first working minute) |
+| `actual_finish` | date | none | Day work finished (its last working minute). Needs `actual_start`, except on milestones, where either date marks the milestone as reached |
+| `remaining` | duration | duration − working time from `actual_start` to the status date | Work left on a started task at the status date |
+| `physical_pct` | number 0–100 | none | Physical percent complete, measured on the work, not on elapsed time. Earns value with `ev_method = "physical"` (ADR 0019). Above 0 needs `actual_start`; a finished task is 100 |
+| `ev_method` | `physical \| S/F` | `physical` | How progress earns the budget (F-COST-14): `physical` uses `physical_pct`; a fixed formula such as `0/100`, `50/50` or `20/80` earns S % at the actual start and the rest at the actual finish. Level-of-effort tasks earn as planned |
+| `actual_cost` | money string | none | Actual cost through the status date, cumulative. Allowed on any node, so cost can be recorded per control account; it rolls up |
+
+### 6.14 `[[task]]`: iterations and points (tier A)
+Agile work in a plan (ADR 0021; knowledge notes, scheduling §5.3–5.7).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `iteration` | iteration id | none | The iteration the work is planned in, an id generated by a cadence (`s03`). On a story it sets the dates; on other tasks it is checked against their dates (`L-AGL-04`). Leaf tasks only |
+| `points` | number ≥ 0 | none | Relative size in story points. Committed points per iteration are checked against the cadence `capacity`; finished points give velocity |
+
+A story (`kind = "story"`) has no duration, effort, estimate, constraint, links or remaining
+work. With an `iteration` it spans that iteration. Without one it is backlog: it has no dates
+and is left out of roll-ups and of the Gantt chart. Progress on a story is its
+`actual_finish` (done) or its `actual_start` (in progress).
+
 ---
 
 ## 7. Cross-field rules enforced by the parser
@@ -337,6 +373,9 @@ These are `E-*` errors because the plan cannot be scheduled with them; everythin
 - `spans` only with `kind = "loe"`, `reserve` only with `kind = "buffer"`, `class` only with
   `kind = "milestone"` (`E-FMT-03`).
 - A calendar has at least one working minute per week (`E-CAL-01`).
+- Progress keys only on leaf tasks that are not level of effort; `actual_finish` not before
+  `actual_start`; `actual_finish` and `remaining` need `actual_start` (a milestone may take
+  `actual_finish` alone); a finished task has no `remaining` work (`E-FMT-03`).
 
 ---
 
