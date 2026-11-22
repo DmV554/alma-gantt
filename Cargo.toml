@@ -16,6 +16,7 @@ alma-format = { path = "crates/alma-format" }
 alma-ops = { path = "crates/alma-ops" }
 alma-layout = { path = "crates/alma-layout" }
 alma-export = { path = "crates/alma-export" }
+alma-mcp = { path = "crates/alma-mcp" }
 jiff = { version = "=0.2.38", default-features = false, features = ["std"] }
 rust_decimal = { version = "=1.43.0", default-features = false, features = ["std"] }
 thiserror = "=2.0.21"
@@ -24,6 +25,9 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 clap = { version = "=4.6.7", features = ["derive"] }
 proptest = "=1.12.0"
+rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-io"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["rt"] }
+base64 = "=0.23.1"
 resvg = { version = "=0.49.0", default-features = false, features = ["text", "system-fonts"] }
 
 [workspace.lints.rust]
