@@ -26,7 +26,7 @@ listed in §12.
 | D4 | WBS role vs scheduling shape | Two orthogonal fields. `kind` (scheduling shape) = `task \| milestone \| loe \| buffer`. `wbs_role` = `deliverable \| control_account \| work_package \| planning_package`. A summary is any node with children (it is never stored). §6.2 |
 | D5 | Milestone fields | Keep SPEC §7.6.3: `class = contractual \| internal \| external`, `owner`, `acceptance`. Drop the notes' `mandatory`, `visibility` and `criterion` (they carry the same information) |
 | D6 | Iterations | `[[cadence]]` (start, length, count) generates the iterations. A flat list of iterations is not stored. Releases are reserved for M4. §6.6 |
-| D7 | Time reserve | `kind = "buffer"` with `reserve = "contingency" \| "management"`. Cost reserves (`[[reserve]]`) are reserved for M2 |
+| D7 | Time reserve | `kind = "buffer"` with `reserve = "contingency" \| "management"`. Cost reserves are `[[reserve]]` (§6.10, ADR 0014) |
 | D8 | Duration vs three-point estimate | Both can be stored. `duration` is the committed value; `estimate` supports it. With no `duration`, the engine uses tE. §6.3 |
 | D9 | Effort | Field `effort`, scheduling type `sched_type = fixed_duration \| fixed_effort \| fixed_units` (SPEC's wording) |
 | D10 | Assignment key | `assign` (as in SPEC §8 and the fixture), not `assignments` |
@@ -45,7 +45,7 @@ Not every field has an effect in M0. Each key belongs to one tier:
 
 | Tier | Meaning | Parser behavior |
 |---|---|---|
-| **A** | Used by the M0 engine or lint | Parsed, validated and used |
+| **A** | Used by the engine, lint or reports | Parsed, validated and used |
 | **B** | Accepted now, used by a later milestone | Parsed, validated (types, references) and preserved; no effect on dates |
 | **R** | Reserved name for a later milestone | Rejected with `E-FMT-05` ("`<key>` is reserved for M<n>, not supported yet") |
 
@@ -125,7 +125,7 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 | `start` | A | date | required | Project start; the forward pass anchor |
 | `calendar` | A | calendar id | built-in `standard` (Mon–Fri, 09:00–13:00 and 14:00–18:00) | Default calendar |
 | `deadline` | A | date | none | Project deadline; the backward pass anchor when `late_anchor = "deadline"` |
-| `currency` | B | string | none | Currency label for money values (`"UF"`, `"USD"`) |
+| `currency` | A | string | none | Currency label for money values (`"UF"`, `"USD"`), shown by cost reports |
 | `description` | B | string | none | Narrative, exported with reports |
 | `status_date`, `estimate_class`, `fx` | R (M4/M2) | | | |
 
@@ -143,6 +143,7 @@ unit      = "min" | "h" | "d" | "w"      ; working time
 | `reporting_period` | B | `week \| month` | `month` | Used by `L-WBS-06` and later by EVM |
 | `rolling_wave_horizon` | B | duration | none | Used by `L-WBS-11` |
 | `three_point` | A | `beta \| triangular` | `beta` | Formula for tE (F-SCH-03/04) |
+| `leveling` | A | `off \| smoothing \| leveling` | `off` | How the scheduler resolves resource over-allocation (ADR 0011). `smoothing` delays tasks within their free float only; `leveling` may move the finish date |
 | `progress_logic`, `agile_drives`, `control_threshold` | R (M4) | | | |
 
 `[settings.cost]` is reserved (R, M2).
@@ -221,8 +222,8 @@ Per-weekday hours and per-resource exceptions are reserved for M2 (keys `week`, 
 ### 6.5 `[[task]]`: resources, cost and metadata
 | # | Key | Tier | Type | Meaning |
 |---|---|---|---|---|
-| 25 | `assign` | A/B | array of `{ resource, units }` | `units` is a fraction of capacity (1 = full time). Used in M0 only by `fixed_effort`/`fixed_units`; histogram and leveling in M2 |
-| 26 | `fixed_cost` | B | table | `{ amount, accrue = start \| prorated \| end, category? }` |
+| 25 | `assign` | A | array of `{ resource, units }` | `units` is a fraction of capacity (1 = full time) for time-rated resources, and a quantity for `per = "use"` rates (20 m of cable, 1 mobilisation). Drives `fixed_effort`, resource usage, leveling and cost |
+| 26 | `fixed_cost` | A | table | `{ amount, accrue = start \| prorated \| end, category? }`. A cost without `category` is `L-COST-01` |
 | 27 | `allow` | A | array of `L-*` codes | Silences those lint rules on this node |
 | 28 | `tags` | B | array of strings | |
 | 29 | `custom` | B | table | Free-form fields (§3.4) |
@@ -232,15 +233,15 @@ Reserved on tasks (R): `actual_start`, `actual_finish`, `remaining`, `physical_p
 `overlap` (M3+); `risk_ref`, `payment`, `payment_ref`, `requirement_refs`, `contract`,
 `account_code`, `org_unit`, `effort_type`, `apportion_to`, `location` (M2+).
 
-### 6.6 `[[resource]]` (tier B)
+### 6.6 `[[resource]]` (tier A)
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `id` | id | required | |
 | `name` | string | id | |
-| `kind` | `work \| equipment \| material \| cost` | `work` | |
-| `rate` | table | none | `{ amount, per = hour \| day \| week \| month \| use }` |
-| `max_units` | number | `1` | Capacity, for leveling (M2) |
-| `calendar` | calendar id | project calendar | |
+| `kind` | `work \| equipment \| material \| cost` | `work` | `work` and `equipment` have a capacity over time (usage, over-allocation, leveling); `material` and `cost` do not |
+| `rate` | table | none | `{ amount, per = hour \| day \| week \| month \| use }`. A time rate costs units × working hours × rate (`1d` = `hours_per_day`, a month = 52/12 weeks); `use` costs units × amount, at the task start (ADR 0012). No rate with assignments is `L-RES-05` |
+| `max_units` | number | `1` | Capacity in units, for over-allocation and leveling (ADR 0011) |
+| `calendar` | calendar id | project calendar | Capacity hours in `alma res usage` |
 
 Reserved (R, M2): `parent`, `category`, `skills`, `org_unit`, `availability`,
 `available_from`, `available_to`, `rates`, `bill_rate`. Assignment keys `work`, `quantity`,
@@ -261,8 +262,40 @@ Generated iteration ids join the global id namespace. Per-iteration overrides, `
 capacity and velocity are reserved (R, M4).
 
 ### 6.8 Other reserved top-level items (R)
-`[[release]]` (M4), `[[reserve]]` (M2), `[[risk]]` (M2), `[[funding]]` (M2), `[[contract]]` (M3),
-`[[scenario]]` (M2), `[[cashflow_item]]` (M2), `[[baseline]]` (M2, D14), `[ucp]` (later).
+`[[release]]` (M4), `[[risk]]` (M2), `[[funding]]` (M2), `[[contract]]` (M3),
+`[[scenario]]` (M2), `[[cashflow_item]]` (M2), `[ucp]` (later).
+
+### 6.9 `[[baseline]]` (tier A)
+Metadata of a saved baseline (D14, ADR 0013). `alma baseline save` writes it together with the
+frozen dates and costs, which go to `.alma/baselines/<plan>/<id>.toml` next to the plan file.
+Commit that directory with the plan.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `id` | id | required | Joins the global id namespace |
+| `name` | string | id | |
+| `date` | date | none | The day it was saved |
+| `active` | boolean | `false` | The baseline reports compare against by default. At most one (`E-FMT-03`) |
+| `parent` | baseline id | none | The baseline this one revises |
+| `change_ref` | string | none | Change request that approved it; a revision without one is `L-BAS-05` |
+| `reason` | string | none | |
+| `approved_by` | string | none | |
+
+### 6.10 `[[reserve]]` (tier A)
+A cost reserve (ADR 0014). Contingency covers identified risks: it is part of the cost baseline
+(BAC) and of planned value, and accrues at the finish of its scope. Management reserve covers the
+unforeseen: it is outside the baseline and counts only in the project budget. Time reserves are
+buffer tasks (D7).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `id` | id | required | Joins the global id namespace |
+| `kind` | `contingency \| management` | `contingency` | |
+| `amount` | money string | required | |
+| `scope` | task id | the project | What it covers; contingency accrues at its finish |
+| `basis` | string | none | How the amount was sized. Contingency without one is `L-RISK-01` |
+
+Reserved (R, M2): `risks` (links to `[[risk]]`).
 
 ---
 

@@ -225,6 +225,18 @@ string_enum! {
 }
 
 string_enum! {
+    /// How the scheduler resolves resource over-allocation (SPEC.md §7.4, ADR 0011).
+    Leveling {
+        /// Dates follow logic only; over-allocation is reported, not resolved.
+        Off = "off",
+        /// Delay tasks within their free float only: the finish date never moves.
+        Smoothing = "smoothing",
+        /// Delay tasks as far as needed; the finish date may move.
+        Leveling = "leveling",
+    }
+}
+
+string_enum! {
     /// Reporting period.
     ReportingPeriod {
         /// One week.
@@ -293,6 +305,90 @@ pub struct Plan {
     pub cadences: Vec<Cadence>,
     /// `[[task]]`, source (WBS) order.
     pub tasks: Vec<Task>,
+    /// `[[baseline]]`, source order (ADR 0013).
+    pub baselines: Vec<Baseline>,
+    /// `[[reserve]]`, source order (ADR 0014).
+    pub reserves: Vec<CostReserve>,
+}
+
+/// `[[reserve]]`: a cost reserve. Contingency is part of the cost baseline; management reserve
+/// is outside it but inside the project budget (knowledge notes, resources §4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CostReserve {
+    /// Id.
+    pub id: String,
+    /// Contingency or management.
+    pub kind: ReserveKind,
+    /// Amount in project currency.
+    pub amount: Decimal,
+    /// Task it covers (its finish is when contingency accrues); `None` = the whole project.
+    pub scope: Option<String>,
+    /// Basis: how the amount was sized.
+    pub basis: Option<String>,
+}
+
+/// One task in a snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapTask {
+    /// Task id.
+    pub id: String,
+    /// Early start.
+    pub start: crate::time::Instant,
+    /// Early finish.
+    pub finish: crate::time::Instant,
+    /// Cost of the task and its descendants.
+    pub cost: Decimal,
+}
+
+/// What a baseline froze.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    /// Baseline id.
+    pub baseline: String,
+    /// Project start.
+    pub start: crate::time::Instant,
+    /// Project finish.
+    pub finish: crate::time::Instant,
+    /// Budget at completion: the total cost.
+    pub bac: Decimal,
+    /// Tasks in plan order.
+    pub tasks: Vec<SnapTask>,
+    /// Cumulative planned cost at the end of each day on which some cost accrued, in date
+    /// order. Days without an entry keep the previous value.
+    pub pv: Vec<(Date, Decimal)>,
+}
+
+impl Snapshot {
+    /// Cumulative planned value at the end of `date` (F-COST-13).
+    pub fn pv_through(&self, date: Date) -> Decimal {
+        match self.pv.binary_search_by(|(d, _)| d.cmp(&date)) {
+            Ok(i) => self.pv[i].1,
+            Err(0) => Decimal::ZERO,
+            Err(i) => self.pv[i - 1].1,
+        }
+    }
+}
+
+/// `[[baseline]]`: metadata of a saved baseline. The frozen dates and costs live in a sidecar
+/// file (`docs/format.md` D14, ADR 0013).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Baseline {
+    /// Id.
+    pub id: String,
+    /// Name.
+    pub name: String,
+    /// The day it was saved.
+    pub date: Option<Date>,
+    /// The baseline reports compare against by default; at most one.
+    pub active: bool,
+    /// The baseline this one revises.
+    pub parent: Option<String>,
+    /// Change request that approved it.
+    pub change_ref: Option<String>,
+    /// Why it was saved or revised.
+    pub reason: Option<String>,
+    /// Who approved it.
+    pub approved_by: Option<String>,
 }
 
 /// `[project]`.
@@ -335,6 +431,8 @@ pub struct ScheduleSettings {
     pub rolling_wave_horizon: Option<Duration>,
     /// Three-point formula.
     pub three_point: Dist,
+    /// Resource leveling mode.
+    pub leveling: Leveling,
 }
 
 impl Default for ScheduleSettings {
@@ -350,6 +448,7 @@ impl Default for ScheduleSettings {
             reporting_period: None,
             rolling_wave_horizon: None,
             three_point: Dist::Beta,
+            leveling: Leveling::Off,
         }
     }
 }

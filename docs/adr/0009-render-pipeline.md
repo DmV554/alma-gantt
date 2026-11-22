@@ -24,3 +24,8 @@ SVG output is stable and testable; PNG pixels may differ slightly between machin
 can be a little shorter or longer than estimated. Bundling a font (license review needed:
 OFL-1.1 fonts are the likely choice) is required before print preflight (M3) and the desktop
 UI, and will replace the estimate with real metrics in both.
+
+Addendum (2026-11-08, M2): the resource histogram and the S-curve use the same pipeline. Pure
+layout functions in `alma_layout::charts` take per-period numbers already computed by the engine
+and return a display list. `alma export --chart histogram|scurve` and MCP `render` turn it into
+SVG or PNG.

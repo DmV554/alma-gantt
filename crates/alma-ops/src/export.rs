@@ -1,4 +1,5 @@
-//! Exports: Gantt chart as SVG or PNG, task table as CSV (SPEC.md §5 M0).
+//! Exports: the Gantt chart, the resource histogram and the S-curve as SVG or PNG, and the task
+//! table as CSV (SPEC.md §5 M0, M2).
 
 use alma_core::model::Plan;
 use alma_layout::{Options, Scale, Theme};
@@ -24,6 +25,14 @@ pub struct RenderRequest {
     pub no_arrows: bool,
     /// Base font size in points (minimum 9).
     pub font_size: Option<f64>,
+    /// `gantt` (default), `histogram` or `scurve`.
+    pub chart: Option<String>,
+    /// Resource id, for `histogram`.
+    pub resource: Option<String>,
+    /// `day`, `week` or `month`, for `histogram` (default week) and `scurve` (default month).
+    pub period: Option<String>,
+    /// Baseline snapshot for the planned value line of `scurve`.
+    pub baseline: Option<alma_core::model::Snapshot>,
 }
 
 /// Parses `A..B` where each end is `YYYY-MM` or `YYYY-MM-DD`.
@@ -67,16 +76,113 @@ fn options(req: &RenderRequest) -> Result<Options, String> {
     })
 }
 
-/// The Gantt chart as SVG text.
-pub fn svg(plan: &Plan, schedule: &Schedule, req: &RenderRequest) -> Result<String, String> {
-    let list = alma_layout::gantt(plan, schedule, &options(req)?);
-    Ok(alma_export::to_svg(&list))
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// A short period label: `Mar 27` for months, `08 Mar` for days and weeks.
+fn period_label(start: &str, period: &str) -> String {
+    let Ok(d) = start.parse::<Date>() else {
+        return start.to_string();
+    };
+    let mon = MONTHS[(d.month() - 1) as usize];
+    if period == "month" {
+        format!("{mon} {:02}", d.year() % 100)
+    } else {
+        format!("{:02} {mon}", d.day())
+    }
 }
 
-/// The Gantt chart as PNG bytes (2 px per point).
+/// The display list of the requested chart.
+fn display(
+    plan: &Plan,
+    schedule: &Schedule,
+    req: &RenderRequest,
+) -> Result<alma_layout::DisplayList, String> {
+    let opts = options(req)?;
+    match req.chart.as_deref().unwrap_or("gantt") {
+        "gantt" => Ok(alma_layout::gantt(plan, schedule, &opts)),
+        "histogram" => {
+            let id = req.resource.as_deref().ok_or_else(|| {
+                let ids: Vec<&str> = plan.resources.iter().map(|r| r.id.as_str()).collect();
+                format!(
+                    "the histogram needs a resource (--resource ID); resources: {}",
+                    ids.join(", ")
+                )
+            })?;
+            let period = req.period.as_deref().unwrap_or("week");
+            let u = crate::resources::usage(plan, schedule, id, period)?;
+            let name = plan
+                .resources
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| r.name.clone())
+                .unwrap_or_default();
+            let data = alma_layout::charts::HistogramData {
+                title: format!(
+                    "{id} ({name}): demand vs capacity per {period}, max {}",
+                    u.max_units
+                ),
+                labels: u
+                    .periods
+                    .iter()
+                    .map(|b| period_label(&b.start, period))
+                    .collect(),
+                demand: u.periods.iter().map(|b| b.demand_h).collect(),
+                capacity: u.periods.iter().map(|b| b.capacity_h).collect(),
+            };
+            Ok(alma_layout::charts::histogram(
+                &data,
+                opts.theme,
+                opts.font_size,
+            ))
+        }
+        "scurve" => {
+            let period = req.period.as_deref().unwrap_or("month");
+            let r = crate::cost::scurve(plan, schedule, period, req.baseline.as_ref())?;
+            let mut series = vec![alma_layout::charts::Series {
+                name: "forecast".into(),
+                values: r.points.iter().map(|p| p.cumulative).collect(),
+                main: true,
+            }];
+            if let Some(b) = &r.baseline {
+                series.push(alma_layout::charts::Series {
+                    name: format!("planned value ({b})"),
+                    values: r.points.iter().map(|p| p.pv.unwrap_or(0.0)).collect(),
+                    main: false,
+                });
+            }
+            let data = alma_layout::charts::CurveData {
+                title: format!("S-curve: cumulative cost per {period}"),
+                unit: plan.project.currency.clone().unwrap_or_default(),
+                labels: r
+                    .points
+                    .iter()
+                    .map(|p| period_label(&p.start, period))
+                    .collect(),
+                series,
+                ceiling: (r.budget > r.total).then(|| ("budget".to_string(), r.budget)),
+            };
+            Ok(alma_layout::charts::curve(
+                &data,
+                opts.theme,
+                opts.font_size,
+            ))
+        }
+        other => Err(format!(
+            "unknown chart `{other}`; use gantt, histogram or scurve"
+        )),
+    }
+}
+
+/// The requested chart (the Gantt chart by default) as SVG text.
+pub fn svg(plan: &Plan, schedule: &Schedule, req: &RenderRequest) -> Result<String, String> {
+    Ok(alma_export::to_svg(&display(plan, schedule, req)?))
+}
+
+/// The requested chart as PNG bytes (2 px per point).
 pub fn png(plan: &Plan, schedule: &Schedule, req: &RenderRequest) -> Result<Vec<u8>, String> {
-    let list = alma_layout::gantt(plan, schedule, &options(req)?);
-    alma_export::to_png(&list, 2.0).map_err(|e| e.to_string())
+    alma_export::to_png(&display(plan, schedule, req)?, 2.0).map_err(|e| e.to_string())
 }
 
 /// Largest comfortable chart side, in points (an A0 sheet is about 3,370 pt wide).
@@ -88,7 +194,7 @@ pub fn warnings(
     schedule: &Schedule,
     req: &RenderRequest,
 ) -> Result<Vec<String>, String> {
-    let list = alma_layout::gantt(plan, schedule, &options(req)?);
+    let list = display(plan, schedule, req)?;
     let mut out = Vec::new();
     if list.width > MAX_COMFORT {
         out.push(format!(

@@ -107,3 +107,12 @@ pub fn parse_ops(text: &str) -> Result<Vec<Op>, String> {
         .map(|(n, l)| serde_json::from_str(l).map_err(|e| format!("line {}: {e}", n + 1)))
         .collect()
 }
+
+/// Today's date (UTC), for records that carry the day they were made.
+pub fn today() -> jiff::civil::Date {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    alma_core::time::date_of_day(secs.div_euclid(86_400))
+}

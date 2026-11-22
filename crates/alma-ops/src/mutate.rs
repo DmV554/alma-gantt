@@ -135,6 +135,30 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_units: Option<String>,
     },
+    /// Change a resource: name, kind, rate, capacity or calendar.
+    #[serde(rename = "res.set")]
+    ResSet {
+        /// Id.
+        id: String,
+        /// Name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        /// Rate as `<amount>/<per>`, e.g. `4.2/day`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rate: Option<String>,
+        /// Capacity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_units: Option<String>,
+        /// Calendar id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        calendar: Option<String>,
+        /// Keys to remove: `rate`, `max_units`, `calendar`, `kind`, `name`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unset: Vec<String>,
+    },
     /// Assign a resource to a task (replaces the units of an existing assignment).
     #[serde(rename = "assign")]
     Assign {
@@ -225,6 +249,96 @@ pub enum Op {
         /// New severity.
         severity: String,
     },
+    /// Set how the scheduler resolves resource over-allocation: `leveling` (default) delays
+    /// tasks until their resources fit and may move the finish; `smoothing` delays them only
+    /// within free float; `off` keeps logic dates and reports over-allocation.
+    #[serde(rename = "level")]
+    Level {
+        /// `leveling`, `smoothing` or `off`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+    },
+    /// Add a cost reserve: `contingency` (inside the cost baseline, for identified risks) or
+    /// `management` (outside it, for the unforeseen).
+    #[serde(rename = "reserve.add")]
+    ReserveAdd {
+        /// Id.
+        id: String,
+        /// Amount, e.g. `300`.
+        amount: String,
+        /// `contingency` (default) or `management`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        /// Task it covers (default: the whole project).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        /// How the amount was sized.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        basis: Option<String>,
+    },
+    /// Remove a cost reserve.
+    #[serde(rename = "reserve.rm")]
+    ReserveRm {
+        /// Id.
+        id: String,
+    },
+    /// Set or unset scheduling settings (`[settings.schedule]`).
+    #[serde(rename = "settings.set")]
+    SettingsSet {
+        /// Keys to set.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        fields: BTreeMap<String, FieldValue>,
+        /// Keys to remove (back to their defaults).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unset: Vec<String>,
+    },
+}
+
+/// Change of the critical path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CriticalChange {
+    /// Tasks now critical, source order.
+    pub added: Vec<String>,
+    /// Tasks no longer critical, source order.
+    pub removed: Vec<String>,
+}
+
+fn total_cost(l: &Loaded) -> Option<rust_decimal::Decimal> {
+    match (&l.plan, &l.schedule) {
+        (Some(p), Some(s)) => Some(alma_sched::cost::costs(p, s).total),
+        _ => None,
+    }
+}
+
+fn cost_delta(before: &Loaded, after: &Loaded) -> Option<String> {
+    let d = (total_cost(after)? - total_cost(before)?).round_dp(2);
+    (!d.is_zero()).then(|| {
+        if d.is_sign_positive() {
+            format!("+{d:.2}")
+        } else {
+            format!("{d:.2}")
+        }
+    })
+}
+
+fn critical_set(l: &Loaded) -> Vec<String> {
+    match (&l.plan, &l.schedule) {
+        (Some(p), Some(s)) => p
+            .tasks
+            .iter()
+            .zip(&s.tasks)
+            .filter(|(_, d)| d.critical && d.in_network)
+            .map(|(t, _)| t.id.clone())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn critical_change(before: &Loaded, after: &Loaded) -> Option<CriticalChange> {
+    let (b, a) = (critical_set(before), critical_set(after));
+    let added: Vec<String> = a.iter().filter(|x| !b.contains(x)).cloned().collect();
+    let removed: Vec<String> = b.iter().filter(|x| !a.contains(x)).cloned().collect();
+    (!added.is_empty() || !removed.is_empty()).then_some(CriticalChange { added, removed })
 }
 
 /// A task whose dates moved.
@@ -254,6 +368,15 @@ pub struct MutationReport {
     /// Change of the project finish (`+3d`, `-1d`, `0d`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_date_delta: Option<String>,
+    /// Change of the total cost (`+52.00`, `-12.50`); absent when it did not change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_delta: Option<String>,
+    /// Tasks that joined or left the critical path; absent when it did not change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_path_changed: Option<CriticalChange>,
+    /// What resource leveling did, when the batch changed the leveling mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leveling: Option<crate::resources::LevelingView>,
     /// Diagnostics that the change introduced.
     pub new_diagnostics: Vec<Diagnostic>,
     /// Why the batch was rejected (empty when `ok`).
@@ -269,6 +392,9 @@ impl MutationReport {
             noop: false,
             changed: Vec::new(),
             end_date_delta: None,
+            cost_delta: None,
+            critical_path_changed: None,
+            leveling: None,
             new_diagnostics: Vec::new(),
             errors,
         }
@@ -282,6 +408,33 @@ fn op_err(code: &'static str, msg: impl Into<String>, ids: &[&str]) -> Diagnosti
 /// Applies a batch to plan text. Returns the new text and the report; on rejection the text
 /// is `None` and the report lists the errors.
 pub fn apply(src: &str, ops: &[Op], dry_run: bool) -> (Option<String>, MutationReport) {
+    let leveling = ops.iter().any(|o| {
+        matches!(o, Op::Level { .. })
+            || matches!(o, Op::SettingsSet { fields, unset }
+                if fields.contains_key("leveling") || unset.iter().any(|k| k == "leveling"))
+    });
+    apply_edit(src, dry_run, leveling, |doc| {
+        for (n, op) in ops.iter().enumerate() {
+            if let Err(mut e) = apply_op(doc, op) {
+                if ops.len() > 1 {
+                    e.message = format!("operation #{}: {}", n + 1, e.message);
+                }
+                return Err(e);
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Applies any document edit with the same guarantees as [`apply`]: the plan must load
+/// before, the result must have no hard error, and the report says what moved. With
+/// `leveling`, the report includes the leveling summary.
+pub fn apply_edit(
+    src: &str,
+    dry_run: bool,
+    leveling: bool,
+    edit: impl FnOnce(&mut DocumentMut) -> Result<(), Diagnostic>,
+) -> (Option<String>, MutationReport) {
     let before = load(src);
     if before.plan.is_none() {
         let errors: Vec<Diagnostic> = before
@@ -307,13 +460,8 @@ pub fn apply(src: &str, ops: &[Op], dry_run: bool) -> (Option<String>, MutationR
             return (None, MutationReport::rejected(vec![d], dry_run));
         }
     };
-    for (n, op) in ops.iter().enumerate() {
-        if let Err(mut e) = apply_op(&mut doc, op) {
-            if ops.len() > 1 {
-                e.message = format!("operation #{}: {}", n + 1, e.message);
-            }
-            return (None, MutationReport::rejected(vec![e], dry_run));
-        }
+    if let Err(e) = edit(&mut doc) {
+        return (None, MutationReport::rejected(vec![e], dry_run));
     }
     let text = doc.to_string();
     let after = load(&text);
@@ -333,6 +481,14 @@ pub fn apply(src: &str, ops: &[Op], dry_run: bool) -> (Option<String>, MutationR
         noop: text == src,
         changed: moved(&before, &after),
         end_date_delta: end_delta(&before, &after),
+        cost_delta: cost_delta(&before, &after),
+        critical_path_changed: critical_change(&before, &after),
+        leveling: leveling
+            .then(|| match (&after.plan, &after.schedule) {
+                (Some(p), Some(s)) => Some(crate::resources::leveling(p, s)),
+                _ => None,
+            })
+            .flatten(),
         new_diagnostics: new_diagnostics(&before, &after),
         errors: Vec::new(),
     };
@@ -367,9 +523,18 @@ pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     }
 }
 
+/// Logs a command that is not a batch operation (`baseline.save`).
+pub(crate) fn log_command(path: &Path, op: &str, id: &str) {
+    append_log_value(path, serde_json::json!([{ "op": op, "id": id }]));
+}
+
 /// Appends the batch to `.alma/log.jsonl` next to the plan. Failures are ignored: the log is
 /// for review, git is the history.
 fn append_log(path: &Path, ops: &[Op]) {
+    append_log_value(path, serde_json::json!(ops));
+}
+
+fn append_log_value(path: &Path, ops: serde_json::Value) {
     use std::io::Write;
     let dir = path
         .parent()
@@ -589,6 +754,144 @@ fn to_item(key: &str, v: &FieldValue) -> Item {
             value(a)
         }
     }
+}
+
+/// Metadata of a new baseline (`alma baseline save`).
+#[derive(Debug, Clone, Default)]
+pub struct BaselineMeta {
+    /// Id.
+    pub id: String,
+    /// Name.
+    pub name: Option<String>,
+    /// Day it is saved, `YYYY-MM-DD`.
+    pub date: String,
+    /// Change request.
+    pub change_ref: Option<String>,
+    /// Reason.
+    pub reason: Option<String>,
+    /// Approver.
+    pub approved_by: Option<String>,
+}
+
+/// Adds a `[[baseline]]` table, makes it the only active one, and links it to the previously
+/// active baseline as its parent. Refuses an existing id: baselines are never overwritten.
+pub(crate) fn add_baseline(doc: &mut DocumentMut, m: &BaselineMeta) -> Result<(), Diagnostic> {
+    let date: toml_edit::Datetime = m.date.parse().map_err(|_| {
+        op_err(
+            "E-OPS-04",
+            format!("`{}` is not a date like 2027-01-04", m.date),
+            &[&m.id],
+        )
+    })?;
+    let mut parent = None;
+    if let Some(aot) = doc
+        .get_mut("baseline")
+        .and_then(Item::as_array_of_tables_mut)
+    {
+        if aot
+            .iter()
+            .any(|b| b.get("id").and_then(Item::as_str) == Some(m.id.as_str()))
+        {
+            return Err(op_err(
+                "E-OPS-01",
+                format!(
+                    "baseline `{}` already exists; baselines are never overwritten",
+                    m.id
+                ),
+                &[&m.id],
+            )
+            .with_hint(
+                "save a new baseline with another id, e.g. `<id>-r2`, and a --change reference",
+            ));
+        }
+        for b in aot.iter_mut() {
+            if b.get("active").and_then(Item::as_bool) == Some(true) {
+                parent = b.get("id").and_then(Item::as_str).map(str::to_string);
+                b.remove("active");
+            }
+        }
+    }
+    let mut t = new_table();
+    t.insert("id", value(m.id.as_str()));
+    if let Some(n) = &m.name {
+        t.insert("name", value(n.as_str()));
+    }
+    t.insert("date", value(date));
+    t.insert("active", value(true));
+    if let Some(p) = parent {
+        t.insert("parent", value(p));
+    }
+    for (k, v) in [
+        ("change_ref", &m.change_ref),
+        ("reason", &m.reason),
+        ("approved_by", &m.approved_by),
+    ] {
+        if let Some(v) = v {
+            t.insert(k, value(v.as_str()));
+        }
+    }
+    push_top_table(doc, "baseline", &m.id, t)
+}
+
+/// The keys of a resource given on the command line, validated, in canonical order.
+fn resource_items(
+    id: &str,
+    name: &Option<String>,
+    kind: &Option<String>,
+    rate: &Option<String>,
+    max_units: &Option<String>,
+    calendar: &Option<String>,
+) -> Result<Vec<(&'static str, Item)>, Diagnostic> {
+    let mut out = Vec::new();
+    if let Some(n) = name {
+        out.push(("name", value(n.as_str())));
+    }
+    if let Some(k) = kind {
+        out.push(("kind", value(k.as_str())));
+    }
+    if let Some(r) = rate {
+        let (amount, per) = r.split_once('/').ok_or_else(|| {
+            op_err(
+                "E-OPS-04",
+                format!("rate `{r}` must look like 4.2/day"),
+                &[id],
+            )
+        })?;
+        let mut rt = InlineTable::new();
+        rt.insert("amount", amount.into());
+        rt.insert("per", per.into());
+        rt.fmt();
+        out.push(("rate", value(rt)));
+    }
+    if let Some(m) = max_units {
+        let v: Value = m.parse().map_err(|_| {
+            op_err(
+                "E-OPS-04",
+                format!("max_units `{m}` is not a number"),
+                &[id],
+            )
+        })?;
+        out.push(("max_units", Item::Value(v)));
+    }
+    if let Some(c) = calendar {
+        out.push(("calendar", value(c.as_str())));
+    }
+    Ok(out)
+}
+
+/// A `[settings.schedule]` value: the day and week lengths are numbers, the rest strings.
+fn setting_item(key: &str, v: &FieldValue) -> Item {
+    if let FieldValue::Text(text) = v
+        && matches!(key, "hours_per_day" | "days_per_week")
+    {
+        if let Ok(n) = text.parse::<i64>() {
+            return value(n);
+        }
+        if let Ok(x) = text.parse::<f64>() {
+            return value(x);
+        }
+    }
+    to_item(key, v)
 }
 
 fn is_date_key(key: &str) -> bool {
@@ -1018,37 +1321,48 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
         } => {
             let mut t = new_table();
             t.insert("id", value(id.as_str()));
-            if let Some(n) = name {
-                t.insert("name", value(n.as_str()));
-            }
-            if let Some(k) = kind {
-                t.insert("kind", value(k.as_str()));
-            }
-            if let Some(r) = rate {
-                let (amount, per) = r.split_once('/').ok_or_else(|| {
-                    op_err(
-                        "E-OPS-04",
-                        format!("rate `{r}` must look like 4.2/day"),
-                        &[id],
-                    )
-                })?;
-                let mut rt = InlineTable::new();
-                rt.insert("amount", amount.into());
-                rt.insert("per", per.into());
-                rt.fmt();
-                t.insert("rate", value(rt));
-            }
-            if let Some(m) = max_units {
-                let v: Value = m.parse().map_err(|_| {
-                    op_err(
-                        "E-OPS-04",
-                        format!("max_units `{m}` is not a number"),
-                        &[id],
-                    )
-                })?;
-                t.insert("max_units", Item::Value(v));
+            for (k, v) in resource_items(id, name, kind, rate, max_units, &None)? {
+                t.insert(k, v);
             }
             push_top_table(doc, "resource", id, t)
+        }
+        Op::ResSet {
+            id,
+            name,
+            kind,
+            rate,
+            max_units,
+            calendar,
+            unset,
+        } => {
+            let items = resource_items(id, name, kind, rate, max_units, calendar)?;
+            const UNSETTABLE: &[&str] = &["name", "kind", "rate", "max_units", "calendar"];
+            if let Some(bad) = unset.iter().find(|k| !UNSETTABLE.contains(&k.as_str())) {
+                return Err(op_err(
+                    "E-FMT-02",
+                    format!("`{bad}` cannot be unset on a resource"),
+                    &[id],
+                )
+                .with_hint(format!("unset takes: {}", UNSETTABLE.join(", "))));
+            }
+            let table = doc
+                .get_mut("resource")
+                .and_then(Item::as_array_of_tables_mut)
+                .and_then(|aot| {
+                    aot.iter_mut()
+                        .find(|r| r.get("id").and_then(Item::as_str) == Some(id.as_str()))
+                })
+                .ok_or_else(|| {
+                    op_err("E-OPS-02", format!("no resource with id `{id}`"), &[id])
+                        .with_hint("run `alma res ls` to list resources")
+                })?;
+            for k in unset {
+                table.remove(k);
+            }
+            for (k, v) in items {
+                insert_canonical(table, "resource", k, v);
+            }
+            Ok(())
         }
         Op::Assign {
             task,
@@ -1277,6 +1591,132 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
                 .as_table_mut()
                 .ok_or_else(|| op_err("E-OPS-04", "`rules.severity` is not a table", &[]))?;
             sev.insert(code, value(severity.as_str()));
+            if created {
+                alma_format::place_tables(doc);
+            }
+            Ok(())
+        }
+        Op::ReserveAdd {
+            id,
+            amount,
+            kind,
+            scope,
+            basis,
+        } => {
+            let mut t = new_table();
+            t.insert("id", value(id.as_str()));
+            if let Some(k) = kind {
+                t.insert("kind", value(k.as_str()));
+            }
+            t.insert("amount", value(amount.as_str()));
+            if let Some(s) = scope {
+                t.insert("scope", value(s.as_str()));
+            }
+            if let Some(b) = basis {
+                t.insert("basis", value(b.as_str()));
+            }
+            push_top_table(doc, "reserve", id, t)
+        }
+        Op::ReserveRm { id } => {
+            let Some(aot) = doc
+                .get_mut("reserve")
+                .and_then(Item::as_array_of_tables_mut)
+            else {
+                return Err(op_err(
+                    "E-OPS-02",
+                    format!("no reserve with id `{id}`"),
+                    &[id],
+                ));
+            };
+            let Some(i) = aot
+                .iter()
+                .position(|r| r.get("id").and_then(Item::as_str) == Some(id.as_str()))
+            else {
+                return Err(op_err(
+                    "E-OPS-02",
+                    format!("no reserve with id `{id}`"),
+                    &[id],
+                ));
+            };
+            aot.remove(i);
+            if aot.is_empty() {
+                doc.remove("reserve");
+            }
+            Ok(())
+        }
+        Op::Level { mode } => {
+            let mode = mode.as_deref().unwrap_or("leveling");
+            if alma_core::model::Leveling::parse(mode).is_none() {
+                return Err(op_err(
+                    "E-OPS-04",
+                    format!("leveling mode `{mode}` must be leveling, smoothing or off"),
+                    &[],
+                ));
+            }
+            let mut fields = BTreeMap::new();
+            let mut unset = Vec::new();
+            if mode == "off" {
+                unset.push("leveling".to_string());
+            } else {
+                fields.insert("leveling".to_string(), FieldValue::Text(mode.to_string()));
+            }
+            apply_op(doc, &Op::SettingsSet { fields, unset })
+        }
+        Op::SettingsSet { fields, unset } => {
+            let allowed = |key: &str| matches!(keys::lookup("settings.schedule", key), Some(def) if !matches!(def.tier, keys::Tier::R(_)));
+            for key in fields.keys().chain(unset.iter()) {
+                if !allowed(key) {
+                    let known: Vec<&str> = keys::keys_of("settings.schedule")
+                        .filter(|k| !matches!(k.tier, keys::Tier::R(_)))
+                        .map(|k| k.key)
+                        .collect();
+                    return Err(op_err(
+                        "E-FMT-02",
+                        format!("`{key}` cannot be set on [settings.schedule]"),
+                        &[],
+                    )
+                    .with_hint(format!("[settings.schedule] takes: {}", known.join(", "))));
+                }
+            }
+            if fields.is_empty() {
+                // Only removals: never create the table for them.
+                if let Some(t) = doc
+                    .get_mut("settings")
+                    .and_then(Item::as_table_mut)
+                    .and_then(|s| s.get_mut("schedule"))
+                    .and_then(Item::as_table_mut)
+                {
+                    for key in unset {
+                        t.remove(key);
+                    }
+                }
+                return Ok(());
+            }
+            let created = doc
+                .get("settings")
+                .and_then(Item::as_table)
+                .and_then(|s| s.get("schedule"))
+                .is_none();
+            if doc.get("settings").is_none() {
+                let mut settings = Table::new();
+                settings.set_implicit(true);
+                doc.insert("settings", Item::Table(settings));
+            }
+            let settings = doc["settings"]
+                .as_table_mut()
+                .ok_or_else(|| op_err("E-OPS-04", "`settings` is not a table", &[]))?;
+            if settings.get("schedule").is_none() {
+                settings.insert("schedule", Item::Table(new_table()));
+            }
+            let t = settings["schedule"]
+                .as_table_mut()
+                .ok_or_else(|| op_err("E-OPS-04", "`settings.schedule` is not a table", &[]))?;
+            for key in unset {
+                t.remove(key);
+            }
+            for (key, v) in fields {
+                insert_canonical(t, "settings.schedule", key, setting_item(key, v));
+            }
             if created {
                 alma_format::place_tables(doc);
             }

@@ -117,8 +117,9 @@ enum Cmd {
         #[command(flatten)]
         m: MutArgs,
     },
-    /// Export the Gantt chart (.svg, .png) or the task table (.csv); `-` writes SVG or CSV
-    /// to stdout. `render` is an alias.
+    /// Export a chart (.svg, .png) or the task table (.csv); `-` writes SVG or CSV to stdout.
+    /// Charts: the Gantt chart (default), a resource histogram, the S-curve. `render` is an
+    /// alias.
     #[command(alias = "render")]
     Export {
         /// Output file; the extension picks the format unless --format is given.
@@ -126,6 +127,18 @@ enum Cmd {
         /// svg, png or csv.
         #[arg(long)]
         format: Option<String>,
+        /// gantt, histogram (needs --resource) or scurve.
+        #[arg(long)]
+        chart: Option<String>,
+        /// Resource id, for --chart histogram.
+        #[arg(long)]
+        resource: Option<String>,
+        /// day, week or month, for histogram (default week) and scurve (default month).
+        #[arg(long)]
+        period: Option<String>,
+        /// Baseline for the planned value line of the S-curve (default: the active one).
+        #[arg(long)]
+        baseline: Option<String>,
         /// Time range, e.g. 2027-01..2027-06 or 2027-01-04..2027-03-31.
         #[arg(long)]
         range: Option<String>,
@@ -144,6 +157,45 @@ enum Cmd {
         /// Base font size in points (minimum 9).
         #[arg(long)]
         font_size: Option<f64>,
+    },
+    /// Cost of the current schedule, by WBS branch, resource or category.
+    Cost {
+        /// wbs, resource or category.
+        #[arg(long, default_value = "wbs")]
+        by: String,
+        /// Deepest WBS level listed with --by wbs.
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+    },
+    /// Cost per period and cumulative (the S-curve): the current schedule's forecast, and
+    /// planned value from the active baseline when there is one.
+    Scurve {
+        /// day, week or month.
+        #[arg(long, default_value = "month")]
+        period: String,
+        /// Baseline for the planned value column (default: the active one).
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Print CSV instead of a table.
+        #[arg(long)]
+        csv: bool,
+    },
+    /// Cost reserves: contingency (inside the cost baseline) and management reserve.
+    #[command(subcommand)]
+    Reserve(ReserveCmd),
+    /// Baselines: frozen copies of dates and costs to measure the plan against.
+    #[command(subcommand)]
+    Baseline(BaselineCmd),
+    /// How the current schedule differs from a baseline: dates and cost per task.
+    Variance {
+        /// Baseline id (default: the active one).
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Only tasks that moved, changed cost, or are new.
+        #[arg(long)]
+        changed: bool,
+        #[command(flatten)]
+        page: PageArgs,
     },
     /// Rewrite the plan in canonical layout (key order, WBS order, spacing); comments are kept.
     Fmt {
@@ -169,6 +221,19 @@ enum Cmd {
     /// Project settings.
     #[command(subcommand)]
     Project(ProjectCmd),
+    /// Scheduling settings ([settings.schedule]).
+    #[command(subcommand)]
+    Settings(SettingsCmd),
+    /// Resolve resource over-allocation: `leveling` delays tasks until their resources fit
+    /// (the finish may move), `smoothing` only within free float, `off` turns it off.
+    /// The setting is saved in the plan; every later schedule is leveled.
+    Level {
+        /// leveling, smoothing or off.
+        #[arg(long, default_value = "leveling")]
+        mode: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
     /// Lint rule configuration for this plan.
     #[command(subcommand)]
     Rule(RuleCmd),
@@ -346,6 +411,79 @@ enum ProjectCmd {
 }
 
 #[derive(Subcommand)]
+enum ReserveCmd {
+    /// Add a reserve.
+    Add {
+        /// Reserve id.
+        id: String,
+        /// Amount, e.g. 300.
+        #[arg(long)]
+        amount: String,
+        /// contingency (default) or management.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Task it covers (default: the whole project).
+        #[arg(long)]
+        scope: Option<String>,
+        /// How the amount was sized.
+        #[arg(long)]
+        basis: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// Remove a reserve.
+    Rm {
+        /// Reserve id.
+        id: String,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum BaselineCmd {
+    /// Freeze the current schedule as a new active baseline. Never overwrites one.
+    Save {
+        /// Baseline id, e.g. b1 or contract.
+        id: String,
+        /// Name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Change request that approved it (expected when it revises another baseline).
+        #[arg(long = "change")]
+        change_ref: Option<String>,
+        /// Why it is saved or revised.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Who approved it.
+        #[arg(long)]
+        approved_by: Option<String>,
+        /// Day it is saved (default: today).
+        #[arg(long)]
+        date: Option<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// List baselines with the finish and budget each one promised.
+    Ls,
+}
+
+#[derive(Subcommand)]
+enum SettingsCmd {
+    /// Set scheduling keys as KEY=VALUE (hours_per_day=8, late_anchor=deadline, phase=baselined,
+    /// leveling=smoothing, …; see `alma keys settings.schedule`).
+    Set {
+        /// KEY=VALUE pairs.
+        pairs: Vec<String>,
+        /// Remove a key, back to its default (repeatable).
+        #[arg(long)]
+        unset: Vec<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+}
+
+#[derive(Subcommand)]
 enum RuleCmd {
     /// Set a lint rule's severity for the whole plan (off, info, warn, error).
     Set {
@@ -414,6 +552,43 @@ enum ResCmd {
         max_units: Option<String>,
         #[command(flatten)]
         m: MutArgs,
+    },
+    /// Change a resource (rate, capacity, kind, name, calendar).
+    Set {
+        /// Resource id.
+        id: String,
+        /// Name.
+        #[arg(long)]
+        name: Option<String>,
+        /// work, equipment, material or cost.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Rate as AMOUNT/PER, e.g. 4.2/day (PER: hour, day, week, month, use).
+        #[arg(long)]
+        rate: Option<String>,
+        /// Capacity in units.
+        #[arg(long = "max")]
+        max_units: Option<String>,
+        /// Calendar id.
+        #[arg(long)]
+        calendar: Option<String>,
+        /// Remove a key: rate, max_units, calendar, kind or name (repeatable).
+        #[arg(long)]
+        unset: Vec<String>,
+        #[command(flatten)]
+        m: MutArgs,
+    },
+    /// List resources with their assigned tasks, booked hours and over-allocations.
+    Ls,
+    /// Demand vs capacity of one resource per period, and where it is over-allocated.
+    Usage {
+        /// Resource id.
+        id: String,
+        /// day, week or month.
+        #[arg(long, default_value = "week")]
+        period: String,
+        #[command(flatten)]
+        page: PageArgs,
     },
 }
 
@@ -650,6 +825,7 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                     println!("  float     total {tf}d, free {}d", v.ff.unwrap_or(0.0));
                 }
                 println!("  critical  {}", v.critical);
+                println!("  cost      {:.2}", v.cost);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -847,6 +1023,338 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             m.dry_run,
             json,
         ),
+        Cmd::Res(ResCmd::Set {
+            id,
+            name,
+            kind,
+            rate,
+            max_units,
+            calendar,
+            unset,
+            m,
+        }) => mutation(
+            file,
+            &[Op::ResSet {
+                id,
+                name,
+                kind,
+                rate,
+                max_units,
+                calendar,
+                unset,
+            }],
+            m.dry_run,
+            json,
+        ),
+        Cmd::Cost { by, depth } => {
+            let (_, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let r = alma_ops::cost::report(
+                l.plan.as_ref().unwrap(),
+                l.schedule.as_ref().unwrap(),
+                &by,
+                depth,
+            )
+            .map_err(Usage)?;
+            if json {
+                print_json(&r);
+            } else {
+                let cur = r.currency.clone().unwrap_or_default();
+                for row in &r.rows {
+                    let label = row.wbs.clone().map(|w| format!("{w} ")).unwrap_or_default();
+                    let work = row.work_h.map(|h| format!("\t{h} h")).unwrap_or_default();
+                    println!(
+                        "{label}{}\t{:.2} {cur}\t{:.1}%{work}",
+                        row.id, row.cost, row.pct
+                    );
+                }
+                let st = &r.stack;
+                if st.contingency != 0.0 || st.management_reserve != 0.0 {
+                    println!(
+                        "work {:.2} + contingency {:.2} = cost baseline {:.2}; + management reserve {:.2} = budget {:.2} {cur}",
+                        st.work,
+                        st.contingency,
+                        st.cost_baseline,
+                        st.management_reserve,
+                        st.project_budget
+                    );
+                } else {
+                    println!("total: {:.2} {cur}", r.total);
+                }
+                if !r.unpriced.is_empty() {
+                    println!("no rate (cost 0): {}", r.unpriced.join(", "));
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Scurve {
+            period,
+            baseline,
+            csv,
+        } => {
+            let (path, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let plan = l.plan.as_ref().unwrap();
+            let snap = match (baseline.as_deref(), plan.baselines.iter().any(|b| b.active)) {
+                (None, false) => None,
+                (b, _) => {
+                    let id = alma_ops::baseline::pick(plan, b).map_err(Usage)?;
+                    Some(alma_ops::baseline::read_snapshot(&path, id).map_err(Usage)?)
+                }
+            };
+            let r =
+                alma_ops::cost::scurve(plan, l.schedule.as_ref().unwrap(), &period, snap.as_ref())
+                    .map_err(Usage)?;
+            if json {
+                print_json(&r);
+            } else if csv {
+                print!("{}", alma_ops::cost::scurve_csv(&r));
+            } else {
+                let cur = r.currency.clone().unwrap_or_default();
+                match &r.baseline {
+                    Some(b) => {
+                        println!("{} per {} ({cur}); pv from baseline {b}", r.basis, r.period)
+                    }
+                    None => println!("{} per {} ({cur})", r.basis, r.period),
+                }
+                for p in &r.points {
+                    let pv = p.pv.map(|v| format!("\t{v:>12.2}")).unwrap_or_default();
+                    println!(
+                        "{}..{}\t{:>12.2}\t{:>12.2}{pv}",
+                        p.start, p.end, p.cost, p.cumulative
+                    );
+                }
+                println!("total: {:.2} {cur}", r.total);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Reserve(c) => {
+            let (op, m) = match c {
+                ReserveCmd::Add {
+                    id,
+                    amount,
+                    kind,
+                    scope,
+                    basis,
+                    m,
+                } => (
+                    Op::ReserveAdd {
+                        id,
+                        amount,
+                        kind,
+                        scope,
+                        basis,
+                    },
+                    m,
+                ),
+                ReserveCmd::Rm { id, m } => (Op::ReserveRm { id }, m),
+            };
+            mutation(file, &[op], m.dry_run, json)
+        }
+        Cmd::Baseline(BaselineCmd::Save {
+            id,
+            name,
+            change_ref,
+            reason,
+            approved_by,
+            date,
+            m,
+        }) => {
+            let path = resolve_file(file)?;
+            let meta = mutate::BaselineMeta {
+                id,
+                name,
+                date: date.unwrap_or_else(|| alma_ops::files::today().to_string()),
+                change_ref,
+                reason,
+                approved_by,
+            };
+            let r = alma_ops::baseline::save(&path, &meta, m.dry_run)
+                .map_err(|e| Usage(format!("cannot save the baseline: {e}")))?;
+            if json {
+                print_json(&r);
+            } else if let Some(b) = &r.baseline {
+                let verb = if r.report.dry_run {
+                    "would save"
+                } else {
+                    "saved"
+                };
+                println!(
+                    "{verb} baseline {} (finish {}, budget {:.2}) in {}",
+                    b.id, b.finish, b.bac, b.file
+                );
+                r.report.new_diagnostics.iter().for_each(print_diag);
+            } else {
+                print_mutation(&r.report);
+            }
+            Ok(if r.report.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
+        Cmd::Baseline(BaselineCmd::Ls) => {
+            let (path, l) = loaded(file)?;
+            let Some(plan) = l.plan.as_ref() else {
+                return Ok(scheduled(&l).unwrap_or(ExitCode::from(1)));
+            };
+            let rows = alma_ops::baseline::list(plan, &path);
+            if json {
+                print_json(
+                    &serde_json::json!({ "schema": alma_ops::OUTPUT_SCHEMA, "baselines": rows }),
+                );
+            } else {
+                if rows.is_empty() {
+                    println!("no baselines; save one with `alma baseline save <id>`");
+                }
+                for b in &rows {
+                    let active = if b.active { " (active)" } else { "" };
+                    match &b.error {
+                        Some(e) => println!("{}{active}\t{e}", b.id),
+                        None => println!(
+                            "{}{active}\t{}\tfinish {}\tbudget {:.2}",
+                            b.id,
+                            b.date.clone().unwrap_or_default(),
+                            b.finish.clone().unwrap_or_default(),
+                            b.bac.unwrap_or_default()
+                        ),
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Variance {
+            baseline,
+            changed,
+            page,
+        } => {
+            let (path, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let plan = l.plan.as_ref().unwrap();
+            let id = alma_ops::baseline::pick(plan, baseline.as_deref()).map_err(Usage)?;
+            let snap = alma_ops::baseline::read_snapshot(&path, id).map_err(Usage)?;
+            let r = alma_ops::baseline::variance(
+                plan,
+                l.schedule.as_ref().unwrap(),
+                &snap,
+                changed,
+                Page::new(page.limit, page.cursor.as_deref()),
+            );
+            if json {
+                print_json(&r);
+            } else {
+                println!(
+                    "against {}: finish {} → {} ({:+}d), cost {:.2} → {:.2} ({:+.2})",
+                    r.baseline,
+                    r.baseline_finish,
+                    r.finish,
+                    r.finish_var,
+                    r.bac,
+                    r.cost,
+                    r.cost_var
+                );
+                for t in &r.tasks {
+                    let new = if t.new { "  (new)" } else { "" };
+                    println!(
+                        "  {}\tstart {:+}d\tfinish {:+}d\tcost {:+.2}{new}",
+                        t.id, t.start_var, t.finish_var, t.cost_var
+                    );
+                }
+                if !r.removed.is_empty() {
+                    println!("  removed since the baseline: {}", r.removed.join(", "));
+                }
+                if let Some(n) = &r.next_cursor {
+                    println!("more: --cursor {n}");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Res(ResCmd::Ls) => {
+            let (_, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let rows =
+                alma_ops::resources::list(l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+            if json {
+                print_json(
+                    &serde_json::json!({ "schema": alma_ops::OUTPUT_SCHEMA, "resources": rows }),
+                );
+            } else {
+                for r in &rows {
+                    let over = if r.over_allocations > 0 {
+                        format!("\tOVER-ALLOCATED ({}x)", r.over_allocations)
+                    } else {
+                        String::new()
+                    };
+                    println!(
+                        "{}\t{}\tmax {}\t{} h\t{}{over}",
+                        r.id,
+                        r.kind,
+                        r.max_units,
+                        r.work_h,
+                        r.tasks.join(",")
+                    );
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Res(ResCmd::Usage { id, period, page }) => {
+            let (_, l) = loaded(file)?;
+            if let Some(code) = scheduled(&l) {
+                return Ok(code);
+            }
+            let mut v = alma_ops::resources::usage(
+                l.plan.as_ref().unwrap(),
+                l.schedule.as_ref().unwrap(),
+                &id,
+                &period,
+            )
+            .map_err(Usage)?;
+            let (items, next) = Page::new(page.limit, page.cursor.as_deref()).apply(&v.periods);
+            let total = v.periods.len();
+            v.periods = items;
+            if json {
+                let mut out = serde_json::to_value(&v).expect("serializable");
+                out["total"] = total.into();
+                if let Some(n) = &next {
+                    out["next_cursor"] = n.clone().into();
+                }
+                print_json(&out);
+            } else {
+                println!(
+                    "{} (max {} units), per {}",
+                    v.resource, v.max_units, v.period
+                );
+                for b in &v.periods {
+                    let flag = if b.over_h > 0.0 { "  OVER" } else { "" };
+                    println!(
+                        "{}..{}\t{:>8} h of {:>8} h{flag}",
+                        b.start, b.end, b.demand_h, b.capacity_h
+                    );
+                }
+                for o in &v.over_allocated {
+                    println!(
+                        "over-allocated {}..{}: {} of {} units ({})",
+                        o.from,
+                        o.to,
+                        o.peak,
+                        o.max,
+                        o.tasks.join(", ")
+                    );
+                }
+                if let Some(n) = &next {
+                    println!("more: --cursor {n}");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Assign {
             task,
             resource,
@@ -881,6 +1389,10 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
         Cmd::Export {
             out,
             format,
+            chart,
+            resource,
+            period,
+            baseline,
             range,
             depth,
             scale,
@@ -888,11 +1400,16 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             no_arrows,
             font_size,
         } => {
-            let (_, l) = loaded(file)?;
+            let (path, l) = loaded(file)?;
             if let Some(code) = scheduled(&l) {
                 return Ok(code);
             }
             let (plan, s) = (l.plan.as_ref().unwrap(), l.schedule.as_ref().unwrap());
+            let baseline = if chart.as_deref() == Some("scurve") {
+                alma_ops::baseline::snapshot_for(plan, &path, baseline.as_deref()).map_err(Usage)?
+            } else {
+                None
+            };
             let format = format.unwrap_or_else(|| {
                 out.extension()
                     .and_then(|e| e.to_str())
@@ -906,6 +1423,10 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 dark,
                 no_arrows,
                 font_size,
+                chart,
+                resource,
+                period,
+                baseline,
             };
             let bytes: Vec<u8> = match format.as_str() {
                 "svg" => alma_ops::export::svg(plan, s, &req)
@@ -1104,6 +1625,22 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             }
             mutation(file, &[Op::ProjectSet { fields }], m.dry_run, json)
         }
+        Cmd::Settings(SettingsCmd::Set { pairs, unset, m }) => {
+            let mut fields = BTreeMap::new();
+            for kv in pairs {
+                let (k, v) = kv
+                    .split_once('=')
+                    .ok_or_else(|| Usage(format!("expected KEY=VALUE, got `{kv}`")))?;
+                fields.insert(k.to_string(), FieldValue::Text(v.to_string()));
+            }
+            if fields.is_empty() && unset.is_empty() {
+                return Err(Usage("give KEY=VALUE pairs or --unset KEY".into()));
+            }
+            mutation(file, &[Op::SettingsSet { fields, unset }], m.dry_run, json)
+        }
+        Cmd::Level { mode, m } => {
+            mutation(file, &[Op::Level { mode: Some(mode) }], m.dry_run, json)
+        }
         Cmd::Rule(RuleCmd::Set { code, severity, m }) => {
             mutation(file, &[Op::RuleSet { code, severity }], m.dry_run, json)
         }
@@ -1222,6 +1759,32 @@ fn print_mutation(r: &MutationReport) {
     }
     if let Some(d) = &r.end_date_delta {
         println!("project finish: {d}");
+    }
+    if let Some(c) = &r.cost_delta {
+        println!("total cost: {c}");
+    }
+    if let Some(c) = &r.critical_path_changed {
+        if !c.added.is_empty() {
+            println!("now critical: {}", c.added.join(", "));
+        }
+        if !c.removed.is_empty() {
+            println!("no longer critical: {}", c.removed.join(", "));
+        }
+    }
+    if let Some(lv) = &r.leveling {
+        println!(
+            "leveling: {} (finish {} with logic alone, {} now)",
+            lv.mode, lv.unleveled_finish, lv.finish
+        );
+        for d in &lv.delayed {
+            println!(
+                "  {} delayed {}d to {}: waits for {} (busy with {})",
+                d.id, d.days, d.to, d.resource, d.waits_for
+            );
+        }
+        if !lv.unresolved.is_empty() {
+            println!("  could not resolve: {}", lv.unresolved.join(", "));
+        }
     }
     if !r.new_diagnostics.is_empty() {
         println!("new diagnostics:");

@@ -48,6 +48,16 @@ fn every_tool_has_a_standalone_object_schema() {
         "dep_add",
         "cal_except",
         "rule_set",
+        "level",
+        "settings_set",
+        "list_resources",
+        "resource_usage",
+        "res_set",
+        "cost",
+        "scurve",
+        "baseline_save",
+        "baseline_list",
+        "variance",
     ] {
         assert!(names.contains(&expected), "missing {expected}");
     }
@@ -93,9 +103,9 @@ fn queries_match_the_cli_json() {
     assert!(!check.is_error);
     assert_eq!(check.json["counts"]["error"], 0);
     let crit = s.call("critical_path", &args(json!({})));
-    assert_eq!(crit.json["project_finish"], "2027-07-30");
+    assert_eq!(crit.json["project_finish"], "2027-09-24");
     let show = s.call("show_task", &args(json!({ "id": "gate-sw" })));
-    assert_eq!(show.json["tf"], 10.0);
+    assert_eq!(show.json["start"], "2027-05-17");
     let list = s.call("list_tasks", &args(json!({ "limit": 5, "fields": ["id"] })));
     assert_eq!(list.json["tasks"].as_array().unwrap().len(), 5);
     assert_eq!(list.json["next_cursor"], "5");
@@ -145,6 +155,66 @@ fn mutations_dry_run_and_write() {
 }
 
 #[test]
+fn resources_and_leveling() {
+    let d = Dir::new("resources");
+    let s = d.server();
+    let r = s.call("list_resources", &args(json!({})));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["resources"].as_array().unwrap().len(), 4);
+    let r = s.call(
+        "resource_usage",
+        &args(json!({ "id": "dev", "period": "month", "limit": 2 })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["periods"].as_array().unwrap().len(), 2);
+    assert_eq!(r.json["next_cursor"], "2");
+    let r = s.call("resource_usage", &args(json!({ "id": "nobody" })));
+    assert!(r.is_error);
+
+    let before = d.text();
+    let r = s.call("level", &args(json!({ "mode": "off", "dry_run": true })));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["leveling"]["over_allocated"][0]["resource"], "dev");
+    assert_eq!(d.text(), before);
+    let r = s.call(
+        "settings_set",
+        &args(json!({ "fields": { "leveling": "smoothing" } })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["leveling"]["mode"], "smoothing");
+    assert!(d.text().contains("leveling = \"smoothing\""));
+
+    let r = s.call("cost", &args(json!({ "by": "resource" })));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["total"], 4714.5);
+    let r = s.call("scurve", &args(json!({ "period": "week" })));
+    assert_eq!(r.json["basis"], "forecast");
+    let r = s.call(
+        "res_set",
+        &args(json!({ "id": "dev", "rate": "5/day", "dry_run": true })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+
+    let r = s.call("variance", &args(json!({})));
+    assert!(r.is_error, "no baseline yet");
+    let r = s.call(
+        "baseline_save",
+        &args(json!({ "id": "b1", "date": "2026-12-15" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["baseline"]["bac"], 4714.5);
+    let r = s.call("baseline_save", &args(json!({ "id": "b1" })));
+    assert!(r.is_error);
+    let r = s.call("baseline_list", &args(json!({})));
+    assert_eq!(r.json["baselines"][0]["id"], "b1");
+    let r = s.call("variance", &args(json!({ "changed": true })));
+    assert!(!r.is_error, "{}", r.json);
+    assert_eq!(r.json["total"], 0);
+    let r = s.call("scurve", &args(json!({})));
+    assert_eq!(r.json["baseline"], "b1");
+}
+
+#[test]
 fn failures_are_tool_errors_with_codes_and_leave_the_file_alone() {
     let d = Dir::new("failures");
     let s = d.server();
@@ -188,6 +258,14 @@ fn render_returns_an_image() {
     let v = serde_json::to_value(&result).unwrap();
     assert_eq!(v["content"][1]["type"], "image");
     assert_eq!(v["content"][1]["mimeType"], "image/png");
+    let hist = s.call(
+        "render",
+        &args(json!({ "chart": "histogram", "resource": "fld", "period": "month" })),
+    );
+    assert!(!hist.is_error, "{}", hist.json);
+    assert!(hist.png.is_some());
+    let bad = s.call("render", &args(json!({ "chart": "histogram" })));
+    assert!(bad.is_error);
     let svg = s.call("render", &args(json!({ "format": "svg" })));
     assert!(svg.json["svg"].as_str().unwrap().starts_with("<svg"));
 }

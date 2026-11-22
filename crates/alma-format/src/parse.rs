@@ -430,6 +430,8 @@ fn read_plan(cx: &mut Cx, root: &toml_edit::Table) -> Option<Plan> {
     let resources = read_list(cx, root, "resource", units, read_resource);
     let cadences = read_list(cx, root, "cadence", units, read_cadence);
     let tasks = read_list(cx, root, "task", units, read_task);
+    let reserves = read_list(cx, root, "reserve", units, read_reserve);
+    let baselines = read_list(cx, root, "baseline", units, read_baseline);
 
     let plan = Plan {
         project,
@@ -439,6 +441,8 @@ fn read_plan(cx: &mut Cx, root: &toml_edit::Table) -> Option<Plan> {
         resources,
         cadences,
         tasks,
+        baselines,
+        reserves,
     };
     validate(cx, &plan, root);
     Some(plan)
@@ -539,6 +543,9 @@ fn read_settings(cx: &mut Cx, root: &toml_edit::Table) -> ScheduleSettings {
     s.rolling_wave_horizon = f.duration(cx, "rolling_wave_horizon", false);
     if let Some(v) = f.enumerated(cx, "three_point", Dist::parse, Dist::VALUES) {
         s.three_point = v;
+    }
+    if let Some(v) = f.enumerated(cx, "leveling", Leveling::parse, Leveling::VALUES) {
+        s.leveling = v;
     }
     s
 }
@@ -817,6 +824,43 @@ fn read_cadence(cx: &mut Cx, f: &Fields<'_>) -> Option<Cadence> {
     })
 }
 
+fn read_reserve(cx: &mut Cx, f: &Fields<'_>) -> Option<CostReserve> {
+    let id = f.required_str(cx, "id")?;
+    if f.get("amount").is_none() {
+        let at = cx.at(f.at.clone());
+        cx.err(
+            "E-FMT-03",
+            format!("{} needs an `amount` like \"300\"", f.owner),
+            at,
+        );
+        return None;
+    }
+    let amount = f.money(cx, "amount")?;
+    Some(CostReserve {
+        kind: f
+            .enumerated(cx, "kind", ReserveKind::parse, ReserveKind::VALUES)
+            .unwrap_or(ReserveKind::Contingency),
+        amount,
+        scope: f.str(cx, "scope"),
+        basis: f.str(cx, "basis"),
+        id,
+    })
+}
+
+fn read_baseline(cx: &mut Cx, f: &Fields<'_>) -> Option<Baseline> {
+    let id = f.required_str(cx, "id")?;
+    Some(Baseline {
+        name: f.str(cx, "name").unwrap_or_else(|| id.clone()),
+        date: f.date(cx, "date"),
+        active: f.bool(cx, "active").unwrap_or(false),
+        parent: f.str(cx, "parent"),
+        change_ref: f.str(cx, "change_ref"),
+        reason: f.str(cx, "reason"),
+        approved_by: f.str(cx, "approved_by"),
+        id,
+    })
+}
+
 fn read_task(cx: &mut Cx, f: &Fields<'_>) -> Option<Task> {
     let id = f.required_str(cx, "id")?;
     let name = f.required_str(cx, "name").unwrap_or_default();
@@ -1031,6 +1075,12 @@ fn validate(cx: &mut Cx, plan: &Plan, root: &toml_edit::Table) {
     for t in &plan.tasks {
         ids.push((t.id.clone(), "task", t.span));
     }
+    for b in &plan.baselines {
+        ids.push((b.id.clone(), "baseline", None));
+    }
+    for r in &plan.reserves {
+        ids.push((r.id.clone(), "reserve", None));
+    }
     for (id, kind, span) in ids {
         if !is_valid_id(&id) {
             cx.err(
@@ -1094,6 +1144,39 @@ fn validate(cx: &mut Cx, plan: &Plan, root: &toml_edit::Table) {
         {
             missing(cx, "calendar", cal, &c.id, None);
         }
+    }
+    for r in &plan.reserves {
+        if let Some(scope) = &r.scope
+            && !tasks.contains_key(scope.as_str())
+        {
+            missing(cx, "task", scope, &r.id, None);
+        }
+    }
+    let baselines: HashSet<&str> = plan.baselines.iter().map(|b| b.id.as_str()).collect();
+    for b in &plan.baselines {
+        if let Some(p) = &b.parent
+            && (!baselines.contains(p.as_str()) || p == &b.id)
+        {
+            missing(cx, "baseline", p, &b.id, None);
+        }
+    }
+    let active: Vec<String> = plan
+        .baselines
+        .iter()
+        .filter(|b| b.active)
+        .map(|b| b.id.clone())
+        .collect();
+    if active.len() > 1 {
+        cx.err(
+            "E-FMT-03",
+            format!(
+                "more than one baseline is active ({}); at most one can be",
+                active.join(", ")
+            ),
+            None,
+        )
+        .ids(active.clone())
+        .hint("keep `active = true` on one of them, or run `alma baseline activate <id>`");
     }
 
     let mut children = vec![0usize; plan.tasks.len()];
