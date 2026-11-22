@@ -2,6 +2,8 @@
 
 Read this file first, then `SPEC.md` in full. This file says *how to work* in the repo; `SPEC.md`
 says *what to build*. If they disagree, `SPEC.md` wins and you report the conflict.
+`docs/development.md` has the resume notes: where the work stands, how features are built here,
+and traps already found.
 
 ## What this is
 
@@ -15,7 +17,7 @@ tool, with agents doing most of the planning and humans able to edit anything by
 - Milestones: **M0** (engine, file format, agent CLI) and **M0.5** (MCP server, `alma mcp`,
   ADR 0010) are done. **M2** (resources, costs, leveling, baselines) is done too, built ahead of
   M1 so agents get resource and cost checks before the desktop editor exists. **M4** (agile and
-  tracking) is in progress on `feat/m4-progress`. See `SPEC.md` §5.
+  tracking) is in progress; everything so far is merged into `main`. See `SPEC.md` §5.
 - M4 so far:
   - progress and the status date (ADR 0018): actual dates and remaining work on leaf tasks,
     rescheduling after the status date with retained logic or progress override,
@@ -65,6 +67,7 @@ tool, with agents doing most of the planning and humans able to edit anything by
 | `SPEC.md` | Product and technical spec. The source of truth |
 | `docs/adr/` | Architecture decisions (0001–0022 accepted). Template: `0000-template.md` |
 | `docs/format.md` | Normative reference of the plan file format |
+| `docs/development.md` | Resume notes for a new session: state, feature checklist, engine concepts, traps |
 | `docs/knowledge/` | Project-management reference notes from PMBOK 6, the WBS standard, the Agile Practice Guide and estimation sources. Each concept maps to model fields, engine behavior, lint rules (Annex A) and formulas (Annex B) |
 | `crates/alma-core` | Domain model: no I/O, no UI |
 | `crates/alma-sched` | Scheduling engine: pure functions over `alma-core` |
