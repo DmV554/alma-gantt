@@ -11,7 +11,7 @@ use alma_core::diag::Diagnostic;
 use alma_core::duration::Duration;
 use alma_core::model::{
     Calendar, ConstraintKind, CriticalDefinition, DepType, Dist, LagCalendar, LateAnchor, Leveling,
-    Plan, SchedType, TaskKind,
+    Plan, ResourceCalendars, SchedType, TaskKind,
 };
 use alma_core::time::{DAY, Instant, start_of};
 use rust_decimal::Decimal;
@@ -240,10 +240,16 @@ pub fn resolve_duration(plan: &Plan, i: usize) -> Duration {
     Duration::ZERO
 }
 
-/// Compiled calendars of a plan.
+/// Compiled calendars of a plan, including the working time each task shares with the
+/// resources assigned to it (ADR 0017).
 pub struct Calendars {
     project: WorkCalendar,
     by_id: HashMap<String, WorkCalendar>,
+    /// Per task, an index into `combined` when resource calendars narrow its working time.
+    task: Vec<Option<usize>>,
+    combined: Vec<WorkCalendar>,
+    /// (task, resource) pairs whose calendars share no working time; the task keeps its own.
+    pub disjoint: Vec<(usize, usize)>,
 }
 
 impl Calendars {
@@ -260,7 +266,81 @@ impl Calendars {
             .as_ref()
             .and_then(|id| by_id.get(id).cloned())
             .unwrap_or_else(|| WorkCalendar::new(&Calendar::standard()));
-        Self { project, by_id }
+        let mut task = vec![None; plan.tasks.len()];
+        let mut combined: Vec<WorkCalendar> = Vec::new();
+        let mut cache: HashMap<(Option<String>, Vec<String>), Option<usize>> = HashMap::new();
+        let mut disjoint = Vec::new();
+        if plan.settings.resource_calendars == ResourceCalendars::Intersect {
+            let res: HashMap<&str, usize> = plan
+                .resources
+                .iter()
+                .enumerate()
+                .map(|(i, r)| (r.id.as_str(), i))
+                .collect();
+            for (i, t) in plan.tasks.iter().enumerate() {
+                let mut with_cal: Vec<(usize, String)> = t
+                    .assign
+                    .iter()
+                    .filter_map(|a| res.get(a.resource.as_str()).copied())
+                    .filter_map(|r| {
+                        let c = plan.resources[r].calendar.clone()?;
+                        by_id.contains_key(&c).then_some((r, c))
+                    })
+                    .collect();
+                if with_cal.is_empty() {
+                    continue;
+                }
+                with_cal.sort_by(|a, b| a.1.cmp(&b.1));
+                let base_id = t.calendar.clone().filter(|c| by_id.contains_key(c));
+                let key = (
+                    base_id.clone(),
+                    with_cal.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>(),
+                );
+                let slot = if let Some(s) = cache.get(&key) {
+                    *s
+                } else {
+                    let base = base_id
+                        .as_ref()
+                        .and_then(|c| by_id.get(c))
+                        .unwrap_or(&project);
+                    let mut cal = base.clone();
+                    for (_, c) in &with_cal {
+                        cal = cal.intersect(&by_id[c]);
+                    }
+                    let s = cal.has_work().then(|| {
+                        combined.push(cal);
+                        combined.len() - 1
+                    });
+                    cache.insert(key, s);
+                    s
+                };
+                match slot {
+                    Some(s) => task[i] = Some(s),
+                    None => {
+                        // Name the resources that leave no shared time with the task alone.
+                        let base = base_id
+                            .as_ref()
+                            .and_then(|c| by_id.get(c))
+                            .unwrap_or(&project);
+                        for (r, c) in &with_cal {
+                            if !base.intersect(&by_id[c]).has_work() {
+                                disjoint.push((i, *r));
+                            }
+                        }
+                        if !disjoint.iter().any(|(t, _)| *t == i) {
+                            disjoint.push((i, with_cal[0].0));
+                        }
+                    }
+                }
+            }
+        }
+        Self {
+            project,
+            by_id,
+            task,
+            combined,
+            disjoint,
+        }
     }
 
     /// The project calendar.
@@ -275,6 +355,9 @@ impl Calendars {
 
     /// The calendar of a task (its override, or the project calendar).
     pub fn of_task(&self, plan: &Plan, i: usize) -> &WorkCalendar {
+        if let Some(Some(k)) = self.task.get(i) {
+            return &self.combined[*k];
+        }
         plan.tasks[i]
             .calendar
             .as_ref()

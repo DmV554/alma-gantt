@@ -51,6 +51,9 @@ pub struct CostReport {
     pub total: f64,
     /// How the total and the budget are built (F-COST-09, F-COST-10).
     pub stack: CostStack,
+    /// Funding and the first shortfall, when the plan has funding entries (F-COST-11).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub funding: Option<crate::finance::FundingView>,
     /// `wbs`, `resource` or `category`.
     pub by: String,
     /// Rows, in plan order (`wbs`, `resource`) or by category name.
@@ -172,6 +175,7 @@ pub fn report(
         currency: plan.project.currency.clone(),
         total: money(c.total),
         stack: stack(&c),
+        funding: crate::finance::funding(plan, schedule),
         by: by.into(),
         rows,
         unpriced: c
@@ -196,6 +200,9 @@ pub struct CurvePoint {
     /// Cumulative planned value at the end of the period, from the baseline (F-COST-13).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pv: Option<f64>,
+    /// Cumulative funding available by the end of the period.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub funded: Option<f64>,
 }
 
 /// Result of `alma scurve`.
@@ -254,6 +261,13 @@ pub fn scurve(
             cost: money(pt.cost),
             cumulative: money(pt.cumulative),
             pv: pv.as_ref().map(|v| money(v[i])),
+            funded: (!plan.funding.is_empty()).then(|| {
+                let last = buckets[i]
+                    .1
+                    .checked_sub(jiff::Span::new().days(1))
+                    .unwrap_or(buckets[i].1);
+                money(alma_sched::finance::funded_through(plan, last))
+            }),
         })
         .collect();
     Ok(CurveReport {
@@ -269,20 +283,29 @@ pub fn scurve(
     })
 }
 
-/// The S-curve as CSV: `start,end,cost,cumulative`, and `pv` when there is a baseline.
+/// The S-curve as CSV: `start,end,cost,cumulative`, then `pv` with a baseline and `funded`
+/// with funding entries.
 pub fn scurve_csv(r: &CurveReport) -> String {
-    let mut out = String::from(if r.baseline.is_some() {
-        "start,end,cost,cumulative,pv\n"
-    } else {
-        "start,end,cost,cumulative\n"
-    });
+    let with_pv = r.baseline.is_some();
+    let with_funding = r.points.iter().any(|p| p.funded.is_some());
+    let mut out = String::from("start,end,cost,cumulative");
+    if with_pv {
+        out.push_str(",pv");
+    }
+    if with_funding {
+        out.push_str(",funded");
+    }
+    out.push('\n');
     for p in &r.points {
         out.push_str(&format!(
             "{},{},{:.2},{:.2}",
             p.start, p.end, p.cost, p.cumulative
         ));
-        if let Some(pv) = p.pv {
-            out.push_str(&format!(",{pv:.2}"));
+        if with_pv {
+            out.push_str(&format!(",{:.2}", p.pv.unwrap_or(0.0)));
+        }
+        if with_funding {
+            out.push_str(&format!(",{:.2}", p.funded.unwrap_or(0.0)));
         }
         out.push('\n');
     }

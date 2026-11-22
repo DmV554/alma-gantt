@@ -206,8 +206,47 @@ fn arb_op() -> impl Strategy<Value = Op> {
                 kind: Some(kind.into()),
                 scope: scope.map(id),
                 basis: Some("EMV".into()),
+                risks: Vec::new(),
             }),
         prop_oneof![Just("c1"), Just("mr")].prop_map(|r| Op::ReserveRm { id: r.into() }),
+        (
+            prop_oneof![Just("r1"), Just("r2")],
+            prop_oneof![Just("0.3"), Just("1"), Just("2"), Just("x")],
+            proptest::option::of(any::<usize>()),
+        )
+            .prop_map(|(r, p, affects)| Op::RiskAdd {
+                id: r.into(),
+                name: "Risk".into(),
+                probability: p.into(),
+                impact: Some("200".into()),
+                impact_time: None,
+                sign: None,
+                owner: None,
+                affects: affects.map(id).into_iter().collect(),
+                correlation_group: None,
+            }),
+        (
+            prop_oneof![Just("r1"), Just("r2")],
+            prop_oneof![Just("closed"), Just("open"), Just("maybe")],
+        )
+            .prop_map(|(r, st)| Op::RiskSet {
+                id: r.into(),
+                fields: fields(&[("status", st)]),
+                unset: Vec::new(),
+            }),
+        prop_oneof![Just("r1"), Just("r2")].prop_map(|r| Op::RiskRm { id: r.into() }),
+        (
+            prop_oneof![Just("f1"), Just("f2")],
+            1u32..12,
+            prop_oneof![Just("2000"), Just("y")]
+        )
+            .prop_map(|(f, m, a)| Op::FundingAdd {
+                id: f.into(),
+                date: format!("2027-{m:02}-01"),
+                amount: a.into(),
+                source: None,
+            }),
+        prop_oneof![Just("f1"), Just("f2")].prop_map(|f| Op::FundingRm { id: f.into() }),
         prop_oneof![
             Just("leveling"),
             Just("smoothing"),
@@ -286,7 +325,12 @@ proptest! {
                     // for removals of something already gone).
                     if !matches!(
                         op,
-                        Op::TaskRm { .. } | Op::DepRm { .. } | Op::Unassign { .. } | Op::ReserveRm { .. }
+                        Op::TaskRm { .. }
+                            | Op::DepRm { .. }
+                            | Op::Unassign { .. }
+                            | Op::ReserveRm { .. }
+                            | Op::RiskRm { .. }
+                            | Op::FundingRm { .. }
                     ) {
                         let (again, r2) = apply(&new, std::slice::from_ref(op), false);
                         prop_assert!(r2.ok, "{:?} not repeatable: {:?}", op, r2.errors);

@@ -5,6 +5,7 @@ pub mod baseline;
 pub mod calendar;
 pub mod cost;
 pub mod cpm;
+pub mod finance;
 mod level;
 pub mod lint;
 pub mod resources;

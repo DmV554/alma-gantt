@@ -26,6 +26,9 @@ pub struct Series {
     pub values: Vec<f64>,
     /// Drawn as the main series (bar color) or the reference one (ink, thinner, with markers).
     pub main: bool,
+    /// A staircase: each value holds across its whole period (funding available from the
+    /// start of the period), drawn in the muted color.
+    pub step: bool,
 }
 
 /// Cumulative curves per period, with an optional horizontal ceiling.
@@ -338,6 +341,23 @@ pub fn curve(data: &CurveData, theme: Theme, font: f64) -> DisplayList {
     }
     let mut items = Vec::new();
     for s in &data.series {
+        if s.step {
+            let mut points = Vec::with_capacity(s.values.len() * 2);
+            for (i, v) in s.values.iter().enumerate() {
+                points.push((f.x(i), f.y(*v)));
+                points.push((f.x(i + 1), f.y(*v)));
+            }
+            if !points.is_empty() {
+                prims.push(Prim::Poly {
+                    points,
+                    fill: None,
+                    stroke: Some(theme.muted),
+                    width: 1.5,
+                });
+            }
+            items.push((s.name.clone(), theme.muted));
+            continue;
+        }
         let color = if s.main { theme.bar } else { theme.ink };
         // Values are at the end of each period: start from zero at the first period's start.
         let mut points = vec![(f.x(0), f.y(0.0))];

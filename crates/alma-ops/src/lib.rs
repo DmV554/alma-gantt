@@ -6,6 +6,7 @@ pub mod cost;
 pub mod diff;
 pub mod export;
 pub mod files;
+pub mod finance;
 pub mod mutate;
 pub mod query;
 pub mod resources;

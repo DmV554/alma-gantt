@@ -28,6 +28,8 @@ fn plan(tasks: Vec<Task>) -> Plan {
         tasks,
         baselines: Vec::new(),
         reserves: Vec::new(),
+        risks: Vec::new(),
+        funding: Vec::new(),
     }
 }
 

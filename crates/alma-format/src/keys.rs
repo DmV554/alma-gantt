@@ -36,7 +36,7 @@ macro_rules! keys {
 pub const KEYS: &[KeyDef] = keys! {
     "top" => [
         "project": A, "settings": A, "rules": A, "calendar": A, "resource": A, "cadence": B,
-        "task": A, "release": R("M4"), "reserve": A, "risk": R("M2"), "funding": R("M2"),
+        "task": A, "release": R("M4"), "reserve": A, "risk": A, "funding": A,
         "contract": R("M3"), "scenario": R("M2"), "cashflow_item": R("M2"),
         "baseline": A, "ucp": R("a later milestone"),
     ],
@@ -49,13 +49,18 @@ pub const KEYS: &[KeyDef] = keys! {
         "hours_per_day": A, "days_per_week": A, "late_anchor": A, "critical_definition": A,
         "critical_threshold": A, "near_critical": A, "lag_calendar": A, "phase": A,
         "reporting_period": B, "rolling_wave_horizon": B, "three_point": A,
-        "leveling": A,
+        "leveling": A, "resource_calendars": A,
         "progress_logic": R("M4"), "agile_drives": R("M4"), "control_threshold": R("M4"),
     ],
     "rules" => ["severity": A, "params": A],
     "reserve" => [
-        "id": A, "kind": A, "amount": A, "scope": A, "basis": A, "risks": R("M2"),
+        "id": A, "kind": A, "amount": A, "scope": A, "basis": A, "risks": A,
     ],
+    "risk" => [
+        "id": A, "name": A, "probability": A, "impact": A, "impact_time": A, "sign": A,
+        "status": A, "owner": A, "affects": A, "correlation_group": A,
+    ],
+    "funding" => ["id": A, "date": A, "amount": A, "source": A],
     "baseline" => [
         "id": A, "name": A, "date": A, "active": A, "parent": A, "change_ref": A, "reason": A,
         "approved_by": A,

@@ -275,6 +275,74 @@ pub enum Op {
         /// How the amount was sized.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         basis: Option<String>,
+        /// Risks it covers.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        risks: Vec<String>,
+    },
+    /// Add an identified risk: probability (0–1) and cost and/or time impact.
+    #[serde(rename = "risk.add")]
+    RiskAdd {
+        /// Id.
+        id: String,
+        /// Name.
+        name: String,
+        /// Probability between 0 and 1, e.g. `0.3`.
+        probability: String,
+        /// Cost impact, e.g. `200`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        impact: Option<String>,
+        /// Time impact, e.g. `10d`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        impact_time: Option<String>,
+        /// `threat` (default) or `opportunity`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sign: Option<String>,
+        /// Owner.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<String>,
+        /// Tasks it affects.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        affects: Vec<String>,
+        /// Risks with a common cause share a group.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        correlation_group: Option<String>,
+    },
+    /// Set or unset fields of a risk (e.g. `status = closed`, `probability = 0.1`).
+    #[serde(rename = "risk.set")]
+    RiskSet {
+        /// Id.
+        id: String,
+        /// Keys to set.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        fields: BTreeMap<String, FieldValue>,
+        /// Keys to remove.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unset: Vec<String>,
+    },
+    /// Remove a risk; refused while a reserve covers it.
+    #[serde(rename = "risk.rm")]
+    RiskRm {
+        /// Id.
+        id: String,
+    },
+    /// Add funding: money available from a date.
+    #[serde(rename = "funding.add")]
+    FundingAdd {
+        /// Id.
+        id: String,
+        /// Day the money is available.
+        date: String,
+        /// Amount, e.g. `2000`.
+        amount: String,
+        /// Where it comes from.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    },
+    /// Remove a funding entry.
+    #[serde(rename = "funding.rm")]
+    FundingRm {
+        /// Id.
+        id: String,
     },
     /// Remove a cost reserve.
     #[serde(rename = "reserve.rm")]
@@ -1602,6 +1670,7 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
             kind,
             scope,
             basis,
+            risks,
         } => {
             let mut t = new_table();
             t.insert("id", value(id.as_str()));
@@ -1615,35 +1684,130 @@ fn apply_op(doc: &mut DocumentMut, op: &Op) -> Result<(), Diagnostic> {
             if let Some(b) = basis {
                 t.insert("basis", value(b.as_str()));
             }
+            if !risks.is_empty() {
+                t.insert("risks", to_item("risks", &FieldValue::List(risks.clone())));
+            }
             push_top_table(doc, "reserve", id, t)
         }
-        Op::ReserveRm { id } => {
-            let Some(aot) = doc
-                .get_mut("reserve")
-                .and_then(Item::as_array_of_tables_mut)
-            else {
-                return Err(op_err(
-                    "E-OPS-02",
-                    format!("no reserve with id `{id}`"),
-                    &[id],
-                ));
-            };
-            let Some(i) = aot
-                .iter()
-                .position(|r| r.get("id").and_then(Item::as_str) == Some(id.as_str()))
-            else {
-                return Err(op_err(
-                    "E-OPS-02",
-                    format!("no reserve with id `{id}`"),
-                    &[id],
-                ));
-            };
-            aot.remove(i);
-            if aot.is_empty() {
-                doc.remove("reserve");
+        Op::ReserveRm { id } => remove_top(doc, "reserve", id),
+        Op::RiskAdd {
+            id,
+            name,
+            probability,
+            impact,
+            impact_time,
+            sign,
+            owner,
+            affects,
+            correlation_group,
+        } => {
+            let mut t = new_table();
+            t.insert("id", value(id.as_str()));
+            t.insert("name", value(name.as_str()));
+            t.insert("probability", number_item(id, "probability", probability)?);
+            for (k, v) in [
+                ("impact", impact),
+                ("impact_time", impact_time),
+                ("sign", sign),
+                ("owner", owner),
+            ] {
+                if let Some(v) = v {
+                    t.insert(k, value(v.as_str()));
+                }
+            }
+            if !affects.is_empty() {
+                t.insert(
+                    "affects",
+                    to_item("affects", &FieldValue::List(affects.clone())),
+                );
+            }
+            if let Some(g) = correlation_group {
+                t.insert("correlation_group", value(g.as_str()));
+            }
+            push_top_table(doc, "risk", id, t)
+        }
+        Op::RiskSet { id, fields, unset } => {
+            for key in fields.keys().chain(unset.iter()) {
+                if key == "id" || keys::lookup("risk", key).is_none() {
+                    let known: Vec<&str> = keys::keys_of("risk")
+                        .map(|k| k.key)
+                        .filter(|k| *k != "id")
+                        .collect();
+                    return Err(op_err(
+                        "E-FMT-02",
+                        format!("`{key}` cannot be set on a risk"),
+                        &[id],
+                    )
+                    .with_hint(format!("a risk takes: {}", known.join(", "))));
+                }
+            }
+            let mut items = Vec::new();
+            for (k, v) in fields {
+                let item = match (k.as_str(), v) {
+                    ("probability", FieldValue::Text(p)) => number_item(id, "probability", p)?,
+                    _ => to_item(k, v),
+                };
+                items.push((k.as_str(), item));
+            }
+            let table = top_table_mut(doc, "risk", id)?;
+            for k in unset {
+                table.remove(k);
+            }
+            for (k, item) in items {
+                insert_canonical(table, "risk", k, item);
             }
             Ok(())
         }
+        Op::RiskRm { id } => {
+            let covering: Vec<String> = doc
+                .get("reserve")
+                .and_then(Item::as_array_of_tables)
+                .map(|aot| {
+                    aot.iter()
+                        .filter(|r| {
+                            r.get("risks")
+                                .and_then(Item::as_array)
+                                .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(id.as_str())))
+                        })
+                        .filter_map(|r| r.get("id").and_then(Item::as_str).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !covering.is_empty() {
+                return Err(op_err(
+                    "E-OPS-03",
+                    format!("reserve {} covers risk `{id}`", covering.join(", ")),
+                    &[id],
+                )
+                .with_hint(
+                    "close it instead (`alma risk set ID --field status=closed`), or remove it from the reserve first",
+                ));
+            }
+            remove_top(doc, "risk", id)
+        }
+        Op::FundingAdd {
+            id,
+            date,
+            amount,
+            source,
+        } => {
+            let d: toml_edit::Datetime = date.parse().map_err(|_| {
+                op_err(
+                    "E-OPS-04",
+                    format!("`{date}` is not a date like 2027-01-04"),
+                    &[id],
+                )
+            })?;
+            let mut t = new_table();
+            t.insert("id", value(id.as_str()));
+            t.insert("date", value(d));
+            t.insert("amount", value(amount.as_str()));
+            if let Some(s) = source {
+                t.insert("source", value(s.as_str()));
+            }
+            push_top_table(doc, "funding", id, t)
+        }
+        Op::FundingRm { id } => remove_top(doc, "funding", id),
         Op::Level { mode } => {
             let mode = mode.as_deref().unwrap_or("leveling");
             if alma_core::model::Leveling::parse(mode).is_none() {
@@ -1780,6 +1944,52 @@ fn push_top_table(doc: &mut DocumentMut, kind: &str, id: &str, t: Table) -> Resu
         alma_format::place_tables(doc);
     }
     Ok(())
+}
+
+/// The `[[kind]]` table with this id.
+fn top_table_mut<'a>(
+    doc: &'a mut DocumentMut,
+    kind: &str,
+    id: &str,
+) -> Result<&'a mut Table, Diagnostic> {
+    doc.get_mut(kind)
+        .and_then(Item::as_array_of_tables_mut)
+        .and_then(|aot| {
+            aot.iter_mut()
+                .find(|r| r.get("id").and_then(Item::as_str) == Some(id))
+        })
+        .ok_or_else(|| op_err("E-OPS-02", format!("no {kind} with id `{id}`"), &[id]))
+}
+
+/// Removes the `[[kind]]` table with this id, and the array when it becomes empty.
+fn remove_top(doc: &mut DocumentMut, kind: &str, id: &str) -> Result<(), Diagnostic> {
+    let missing = || op_err("E-OPS-02", format!("no {kind} with id `{id}`"), &[id]);
+    let aot = doc
+        .get_mut(kind)
+        .and_then(Item::as_array_of_tables_mut)
+        .ok_or_else(missing)?;
+    let i = aot
+        .iter()
+        .position(|r| r.get("id").and_then(Item::as_str) == Some(id))
+        .ok_or_else(missing)?;
+    aot.remove(i);
+    if aot.is_empty() {
+        doc.remove(kind);
+    }
+    Ok(())
+}
+
+/// A number given as text, written as a TOML number.
+fn number_item(id: &str, key: &str, text: &str) -> Result<Item, Diagnostic> {
+    let v: Option<Value> = text.parse().ok();
+    match v {
+        Some(v) if v.is_integer() || v.is_float() => Ok(Item::Value(v)),
+        _ => Err(op_err(
+            "E-OPS-04",
+            format!("{key} `{text}` is not a number"),
+            &[id],
+        )),
+    }
 }
 
 /// Appends to an inline array using the spacing of its last element, so a multi-line array
