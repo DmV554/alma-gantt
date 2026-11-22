@@ -1,0 +1,296 @@
+[project]
+format = 0
+name = "Container terminal TOS replacement - Stage 1"
+start = 2027-01-04
+
+[[resource]]
+id = "pm"
+name = "Project manager"
+kind = "work"
+rate = { amount = "6", per = "day" }
+max_units = 1
+
+[[resource]]
+id = "dev"
+name = "Developers"
+kind = "work"
+rate = { amount = "4.2", per = "day" }
+max_units = 6
+
+[[resource]]
+id = "qa"
+name = "QA engineers"
+kind = "work"
+rate = { amount = "3.6", per = "day" }
+max_units = 3
+
+[[resource]]
+id = "tech"
+name = "Field technicians"
+kind = "work"
+rate = { amount = "3.1", per = "day" }
+max_units = 4
+
+[[cadence]]
+id = "sprints"
+name = "Sprints"
+prefix = "s"
+start = 2027-04-05
+length = "10d"
+count = 12
+
+[[task]]
+id = "mgmt"
+name = "Project management"
+wbs_role = "control_account"
+owner = "pm"
+
+[[task]]
+id = "contract-start"
+parent = "mgmt"
+name = "Contract start"
+kind = "milestone"
+class = "contractual"
+owner = "pm"
+acceptance = "Contract signed by both parties"
+
+[[task]]
+id = "discovery"
+parent = "mgmt"
+name = "Discovery and solution design"
+wbs_role = "work_package"
+owner = "pm"
+description = "Three-point estimate 25 / 30 / 40 days (PERT mean about 31 d); planned at 6 weeks"
+acceptance = "Solution design document ready for the decision gate"
+duration = "30d"
+deps = [{ pred = "contract-start" }]
+assign = [{ resource = "pm", units = 1 }, { resource = "dev", units = 2 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "design-gate"
+parent = "mgmt"
+name = "Decision gate: solution design approved"
+kind = "milestone"
+class = "contractual"
+owner = "pm"
+acceptance = "Client approves the solution design"
+deps = [{ pred = "discovery" }]
+
+[[task]]
+id = "platform"
+name = "Platform"
+wbs_role = "control_account"
+owner = "pm"
+
+[[task]]
+id = "environments"
+parent = "platform"
+name = "Environments"
+wbs_role = "work_package"
+owner = "pm"
+acceptance = "Development, test and staging environments available"
+duration = "10d"
+deps = [{ pred = "design-gate" }]
+assign = [{ resource = "dev", units = 2 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "cicd"
+parent = "platform"
+name = "CI/CD pipeline"
+wbs_role = "work_package"
+owner = "pm"
+acceptance = "Pipeline builds, tests and deploys to every environment"
+duration = "5d"
+deps = [{ pred = "environments" }]
+assign = [{ resource = "dev", units = 2 }]
+
+[[task]]
+id = "gate"
+name = "Gate"
+wbs_role = "control_account"
+owner = "pm"
+
+[[task]]
+id = "gate-sw"
+parent = "gate"
+name = "Gate software"
+wbs_role = "work_package"
+approach = "iterative"
+owner = "pm"
+acceptance = "Gate software stories done and passing tests"
+duration = "40d"
+constraint = { type = "SNET", date = 2027-04-05 }
+deps = [{ pred = "cicd" }]
+assign = [{ resource = "dev", units = 3 }, { resource = "qa", units = 1 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "ocr-procure"
+parent = "gate"
+name = "Procure OCR portals"
+wbs_role = "work_package"
+owner = "pm"
+acceptance = "OCR portals delivered on site"
+duration = "20d"
+deps = [{ pred = "design-gate" }]
+assign = [{ resource = "pm", units = 1 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "ocr-install"
+parent = "gate"
+name = "Install OCR portals at the gates"
+wbs_role = "work_package"
+owner = "pm"
+acceptance = "OCR portals installed and reading plates at every gate"
+duration = "15d"
+deps = [{ pred = "ocr-procure" }]
+assign = [{ resource = "tech", units = 2 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "yard"
+name = "Yard"
+wbs_role = "control_account"
+owner = "pm"
+
+[[task]]
+id = "yard-sw"
+parent = "yard"
+name = "Yard software"
+wbs_role = "work_package"
+approach = "iterative"
+owner = "pm"
+acceptance = "Yard software stories done and passing tests"
+duration = "50d"
+constraint = { type = "SNET", date = 2027-04-05 }
+deps = [{ pred = "cicd" }]
+assign = [{ resource = "dev", units = 4 }, { resource = "qa", units = 1 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "lte"
+parent = "yard"
+name = "Private LTE network"
+wbs_role = "work_package"
+owner = "pm"
+acceptance = "Private LTE network covers the whole yard"
+duration = "25d"
+deps = [{ pred = "design-gate" }]
+assign = [{ resource = "tech", units = 3 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "reefer"
+name = "Reefer"
+wbs_role = "control_account"
+owner = "pm"
+
+[[task]]
+id = "reefer-sw"
+parent = "reefer"
+name = "Reefer software"
+wbs_role = "work_package"
+approach = "iterative"
+owner = "pm"
+acceptance = "Reefer software stories done and passing tests"
+duration = "30d"
+constraint = { type = "SNET", date = 2027-04-05 }
+deps = [{ pred = "environments" }]
+assign = [{ resource = "dev", units = 2 }, { resource = "qa", units = 1 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "sensors"
+parent = "reefer"
+name = "Reefer socket sensors"
+wbs_role = "work_package"
+owner = "pm"
+acceptance = "Every reefer socket reports through the LTE network"
+duration = "20d"
+deps = [{ pred = "lte" }]
+assign = [{ resource = "tech", units = 2 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "golive"
+name = "Testing and go-live"
+wbs_role = "control_account"
+owner = "pm"
+
+[[task]]
+id = "int-test"
+parent = "golive"
+name = "Integrated testing"
+wbs_role = "work_package"
+owner = "pm"
+acceptance = "End-to-end test suite passes with no blocking defects"
+duration = "15d"
+deps = [{ pred = "gate-sw" }, { pred = "yard-sw" }, { pred = "reefer-sw" }]
+assign = [{ resource = "qa", units = 3 }, { resource = "dev", units = 2 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "h4"
+parent = "golive"
+name = "H4 - Stage 1 software delivered for testing"
+kind = "milestone"
+class = "contractual"
+owner = "pm"
+acceptance = "Stage 1 software delivered to the client for testing"
+deadline = 2027-10-29
+deps = [{ pred = "int-test" }]
+
+[[task]]
+id = "uat"
+parent = "golive"
+name = "User acceptance testing"
+wbs_role = "work_package"
+owner = "pm"
+acceptance = "Client signs the UAT report"
+duration = "10d"
+deps = [{ pred = "h4" }]
+
+[[task]]
+id = "shadow"
+parent = "golive"
+name = "Shadow run by zone"
+wbs_role = "work_package"
+owner = "pm"
+acceptance = "Every zone runs in shadow mode with matching results"
+duration = "15d"
+deps = [{ pred = "uat" }, { pred = "ocr-install" }, { pred = "sensors" }]
+
+[[task]]
+id = "production"
+parent = "golive"
+name = "Stage 1 in production"
+kind = "milestone"
+class = "contractual"
+owner = "pm"
+acceptance = "Stage 1 running in production at the terminal"
+deps = [{ pred = "shadow" }]
+
+[[task]]
+id = "stabilization"
+parent = "golive"
+name = "Stabilization across three shifts"
+wbs_role = "work_package"
+owner = "pm"
+acceptance = "No severity-1 incidents across three shifts"
+duration = "15d"
+deps = [{ pred = "production" }]
+assign = [{ resource = "dev", units = 3 }]
+allow = ["L-WBS-05"]
+
+[[task]]
+id = "closed"
+parent = "golive"
+name = "Stage 1 closed"
+kind = "milestone"
+class = "internal"
+owner = "pm"
+acceptance = "Stage 1 closure report approved by the project sponsor"
+deps = [{ pred = "stabilization" }]

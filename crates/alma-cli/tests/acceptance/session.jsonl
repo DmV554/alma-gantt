@@ -1,0 +1,23 @@
+{"args": ["guide"], "exit": 0, "output": ""}
+{"args": ["schema"], "exit": 0, "output": ""}
+{"args": ["init", "--help"], "exit": 0, "output": ""}
+{"args": ["task", "add", "--help"], "exit": 0, "output": ""}
+{"args": ["--help"], "exit": 0, "output": ""}
+{"args": ["iter", "add", "--help"], "exit": 0, "output": ""}
+{"args": ["res", "add", "--help"], "exit": 0, "output": ""}
+{"args": ["init", "terminal.alma.toml", "--name", "Container terminal TOS replacement - Stage 1", "--start", "2027-01-04"], "exit": 0, "output": ""}
+{"args": ["apply", "ops1.json", "--dry-run"], "exit": 0, "output": ""}
+{"args": ["apply", "ops1.json"], "exit": 0, "output": ""}
+{"args": ["check"], "exit": 0, "output": ""}
+{"args": ["critical"], "exit": 0, "output": ""}
+{"args": ["ls", "--fields", "id,name,start,finish,tf"], "exit": 0, "output": ""}
+{"args": ["task", "set", "yard-sw", "--field", "iteration=s01", "--dry-run"], "exit": 1, "output": "rejected; the file was not changed:\nerror E-FMT-05: task key `iteration` is reserved for a later milestone"}
+{"args": ["task", "set", "--help"], "exit": 0, "output": ""}
+{"args": ["task", "set", "discovery", "--field", "estimate=25d/30d/40d", "--dry-run"], "exit": 1, "output": "rejected; the file was not changed:\nerror E-OPS-04: `estimate` cannot be set as a plain field\n      hint: edit the file directly for this key, then run `alma check`"}
+{"args": ["apply", "-", "--dry-run"], "exit": 1, "output": "rejected; the file was not changed:\nerror E-OPS-04: `estimate` cannot be set as a plain field\n      hint: edit the file directly for this key, then run `alma check`"}
+{"args": ["apply", "ops2.json"], "exit": 0, "output": ""}
+{"args": ["check", "--min", "warn"], "exit": 0, "output": ""}
+{"args": ["critical"], "exit": 0, "output": ""}
+{"args": ["critical", "--json"], "exit": 0, "output": ""}
+{"args": ["explain", "yard-sw"], "exit": 0, "output": ""}
+{"args": ["export", "gantt.png"], "exit": 0, "output": ""}

@@ -1,0 +1,404 @@
+<title>alma-gantt prototipo</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one-screen planning tool. Toolbar, then grid | timeline split, then a bottom drawer (why / S-curve / file). */
+:root {
+  --bg: #f4f5f2; --panel: #ffffff; --ink: #1c2220; --muted: #66706b; --line: #dde1dc;
+  --bar: #3d6b6e; --bar-soft: #d5e3e2; --crit: #c0432f; --crit-soft: #f3d9d3;
+  --sprint: #e8eee0; --focus: #2f5fd0; --sel: #eef2f7;
+  --sans: "IBM Plex Sans", system-ui, sans-serif; --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #151918; --panel: #1c2120; --ink: #e4e8e5; --muted: #95a09a; --line: #2e3533;
+  --bar: #6fa3a6; --bar-soft: #27403f; --crit: #f07a62; --crit-soft: #4a2a24;
+  --sprint: #1f2a22; --focus: #7ea2ff; --sel: #232b30; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #151918; --panel: #1c2120; --ink: #e4e8e5; --muted: #95a09a; --line: #2e3533;
+  --bar: #6fa3a6; --bar-soft: #27403f; --crit: #f07a62; --crit-soft: #4a2a24;
+  --sprint: #1f2a22; --focus: #7ea2ff; --sel: #232b30; color-scheme: dark }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.4 var(--sans); }
+.app { min-height: 100%; display: flex; flex-direction: column; gap: 10px;
+  padding-block: 12px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); box-sizing: border-box; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+h1 span { color: var(--muted); font-weight: 400; }
+.tools { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+button, select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+button:focus-visible, select:focus-visible, .row:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.stats { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 12px; }
+.stats b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+.stats .warn b { color: var(--crit); }
+.board { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden; min-height: 0; }
+.grid { border-right: 1px solid var(--line); min-width: 0; }
+.ghead, .thead { height: 40px; box-sizing: border-box; border-bottom: 1px solid var(--line); }
+.ghead { display: grid; grid-template-columns: 34px 1fr 44px 40px; align-items: end; padding: 0 8px 6px; gap: 6px;
+  font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.row { display: grid; grid-template-columns: 34px 1fr 44px 40px; gap: 6px; align-items: center; height: 28px;
+  padding: 0 8px; box-sizing: border-box; cursor: pointer; border-bottom: 1px solid transparent; }
+.row:hover { background: var(--sel); }
+.row.sel { background: var(--sel); box-shadow: inset 2px 0 var(--focus); }
+.row .wbs { color: var(--muted); font: 11px var(--mono); }
+.row .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row.group .nm { font-weight: 600; }
+.row.child .nm { padding-left: 12px; }
+.row .num { text-align: right; font: 11px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.row .num.zero { color: var(--crit); }
+.tl { overflow-x: auto; min-width: 0; position: relative; }
+svg text { font-family: var(--sans); }
+.drawer { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-height: 0; display: flex; flex-direction: column; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); padding: 6px 8px 0; flex-wrap: wrap; }
+.tabs button { border: 0; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); padding: 6px 12px; }
+.tabs button[aria-selected="true"] { color: var(--ink); box-shadow: inset 0 -2px var(--ink); }
+.pane { padding: 12px 14px; overflow: auto; max-height: 260px; }
+.why { display: grid; gap: 8px; max-width: 70ch; }
+.why h2 { font-size: 14px; margin: 0; font-weight: 600; text-wrap: balance; }
+.chain { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; font-family: var(--mono); font-size: 11px; background: var(--bg); }
+.chip.crit { border-color: var(--crit); color: var(--crit); }
+.muted { color: var(--muted); }
+pre.toml { margin: 0; font: 12px/1.55 var(--mono); white-space: pre; }
+pre.toml .c { color: var(--muted); } pre.toml .k { color: var(--bar); } pre.toml .hl { background: var(--crit-soft); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 11px; color: var(--muted); }
+.legend i { display: inline-block; width: 18px; height: 8px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+.note { font-size: 11px; color: var(--muted); }
+@media (max-width: 720px) {
+  .board { grid-template-columns: 1fr; }
+  .grid { display: none; }
+}
+@media (prefers-reduced-motion: no-preference) { .bar { transition: x .15s ease, width .15s ease; } }
+</style>
+
+<div class="app">
+  <header>
+    <h1>alma-gantt <span>· plan_tos.alma.toml (ejemplo)</span></h1>
+    <div class="tools" role="toolbar" aria-label="Vista">
+      <button id="bCrit" aria-pressed="true">Ruta crítica</button>
+      <button id="bSprints" aria-pressed="true">Sprints</button>
+      <select id="zoom" aria-label="Zoom"><option value="6">Mes</option><option value="11" selected>Semana</option><option value="22">Día</option></select>
+      <button id="bReset">Quitar restricciones</button>
+    </div>
+  </header>
+  <div class="stats" id="stats"></div>
+  <div class="board">
+    <div class="grid" id="grid"></div>
+    <div class="tl" id="tl"></div>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--bar)"></i>Tarea</span>
+    <span><i style="background:var(--crit)"></i>Ruta crítica (holgura 0)</span>
+    <span><i style="background:var(--bar-soft)"></i>Holgura total</span>
+    <span><i style="background:var(--sprint)"></i>Sprint de 2 semanas</span>
+    <span class="note">Arrastra una barra para fijar "no comenzar antes de" y ver cómo se recalcula todo. Escala en días hábiles.</span>
+  </div>
+  <div class="drawer">
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tWhy" aria-selected="true">¿Por qué esta fecha?</button>
+      <button role="tab" id="tS" aria-selected="false">Curva S</button>
+      <button role="tab" id="tFile" aria-selected="false">Archivo (git)</button>
+    </div>
+    <div class="pane" id="pane"></div>
+  </div>
+</div>
+
+<script>
+// ---------- Example data (hybrid plan: predictive frame + Scrum subprojects) ----------
+const START = new Date(2027, 0, 4); // Monday
+const RES = { dev: { name: "Desarrollador", rate: 4.2 }, qa: { name: "QA", rate: 3.6 }, fld: { name: "Técnico de terreno", rate: 3.1 }, pm: { name: "Jefe de proyecto", rate: 6.0 } };
+const T = [
+  { id: "mgmt", name: "Gestión", group: true },
+  { id: "kick", p: "mgmt", name: "Inicio del contrato", dur: 0 },
+  { id: "disc", p: "mgmt", name: "Levantamiento y diseño", dur: 30, deps: [["kick"]], as: [["pm", 1], ["dev", 2]] },
+  { id: "gate0", p: "mgmt", name: "Puerta de decisión", dur: 0, deps: [["disc"]] },
+  { id: "plat", name: "Plataforma", group: true },
+  { id: "env", p: "plat", name: "Ambientes y CI/CD", dur: 15, deps: [["gate0"]], as: [["dev", 2]] },
+  { id: "gs", name: "Subproyecto Gate", group: true },
+  { id: "g-sw", p: "gs", name: "Software gate (4 sprints)", dur: 40, deps: [["env"]], as: [["dev", 3], ["qa", 1]] },
+  { id: "g-ocr", p: "gs", name: "Instalar OCR en gates", dur: 15, deps: [["gate0", "FS", 20]], as: [["fld", 2]], fixed: 180 },
+  { id: "ys", name: "Subproyecto Patio", group: true },
+  { id: "y-sw", p: "ys", name: "Software patio (5 sprints)", dur: 50, deps: [["env"]], as: [["dev", 4], ["qa", 1]] },
+  { id: "y-lte", p: "ys", name: "Red LTE privada del patio", dur: 25, deps: [["gate0"]], as: [["fld", 3]], fixed: 420 },
+  { id: "rs", name: "Subproyecto Reefer", group: true },
+  { id: "r-sw", p: "rs", name: "Software reefer (3 sprints)", dur: 30, deps: [["env", "SS", 10]], as: [["dev", 2], ["qa", 1]] },
+  { id: "r-sen", p: "rs", name: "Sensores en tomas reefer", dur: 20, deps: [["y-lte"]], as: [["fld", 2]], fixed: 260 },
+  { id: "go", name: "Pruebas y puesta en marcha", group: true },
+  { id: "int", p: "go", name: "Pruebas integradas", dur: 15, deps: [["g-sw"], ["y-sw"], ["r-sw"]], as: [["qa", 3], ["dev", 2]] },
+  { id: "h4", p: "go", name: "H4: software entregado a pruebas", dur: 0, deps: [["int"]] },
+  { id: "uat", p: "go", name: "Pruebas de aceptación", dur: 10, deps: [["h4"]], as: [["qa", 2], ["pm", 1]] },
+  { id: "mb", p: "go", name: "Marcha blanca por zona", dur: 15, deps: [["uat"], ["g-ocr"], ["r-sen"]], as: [["dev", 2], ["fld", 2]] },
+  { id: "prod", p: "go", name: "Producción Etapa 1", dur: 0, deps: [["mb"]] },
+  { id: "stab", p: "go", name: "Estabilización en 3 turnos", dur: 15, deps: [["prod"]], as: [["dev", 2], ["qa", 1]] },
+];
+const ORIG = JSON.parse(JSON.stringify(T));
+const byId = Object.fromEntries(T.map(t => [t.id, t]));
+const state = { crit: true, sprints: true, px: 11, sel: "mb", tab: "why", lastEdit: null };
+
+// ---------- Working-day calendar ----------
+function dateOf(wd) { // working-day index -> Date (skips Sat/Sun)
+  const d = new Date(START); let n = 0;
+  while (n < wd) { d.setDate(d.getDate() + 1); const w = d.getDay(); if (w !== 0 && w !== 6) n++; }
+  return d;
+}
+const fmt = d => d.toLocaleDateString("es-CL", { day: "2-digit", month: "2-digit", year: "numeric" });
+const MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+
+// ---------- CPM (forward + backward pass, FS/SS/FF with lag, SNET constraints) ----------
+function schedule() {
+  const tasks = T.filter(t => !t.group);
+  const order = topo(tasks);
+  for (const t of order) {
+    let es = 0, drv = { kind: "start" };
+    for (const [pid, type = "FS", lag = 0] of t.deps || []) {
+      const p = byId[pid];
+      const v = type === "SS" ? p.es + lag : type === "FF" ? p.ef + lag - t.dur : p.ef + lag;
+      if (v > es || (v === es && drv.kind === "start")) { es = v; drv = { kind: "dep", pid, type, lag }; }
+    }
+    if (t.snet != null && t.snet > es) { es = t.snet; drv = { kind: "snet" }; }
+    t.es = es; t.ef = es + t.dur; t.drv = drv;
+  }
+  const end = Math.max(...tasks.map(t => t.ef));
+  for (const t of tasks) { t.lf = end; t.succ = []; }
+  for (const t of tasks) for (const [pid, type = "FS", lag = 0] of t.deps || []) byId[pid].succ.push([t, type, lag]);
+  for (const t of [...order].reverse()) {
+    let lf = end;
+    for (const [s, type, lag] of t.succ) {
+      const v = type === "SS" ? s.ls - lag + t.dur : type === "FF" ? s.lf - lag : s.ls - lag;
+      lf = Math.min(lf, v);
+    }
+    t.lf = lf; t.ls = lf - t.dur; t.tf = t.ls - t.es;
+  }
+  for (const g of T.filter(t => t.group)) {
+    const kids = T.filter(t => t.p === g.id);
+    g.es = Math.min(...kids.map(k => k.es)); g.ef = Math.max(...kids.map(k => k.ef));
+    g.tf = Math.min(...kids.map(k => k.tf));
+  }
+  return end;
+}
+function topo(tasks) {
+  const seen = new Set(), out = [];
+  const visit = t => { if (seen.has(t.id)) return; seen.add(t.id); (t.deps || []).forEach(([p]) => visit(byId[p])); out.push(t); };
+  tasks.forEach(visit); return out;
+}
+function cost(t) { return (t.as || []).reduce((s, [r, u]) => s + RES[r].rate * u * t.dur, 0) + (t.fixed || 0); }
+
+// ---------- Rendering ----------
+const ROW = 28, HEAD = 40, svgNS = "http://www.w3.org/2000/svg";
+const el = (n, a = {}, txt) => { const e = document.createElementNS(svgNS, n); for (const k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; return e; };
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+function render() {
+  const end = schedule();
+  const tasks = T.filter(t => !t.group);
+  const total = tasks.reduce((s, t) => s + cost(t), 0);
+  const crit = tasks.filter(t => t.tf <= 0 && t.dur > 0).length;
+  document.getElementById("stats").innerHTML =
+    `<span>Inicio <b>${fmt(START)}</b></span><span>Fin <b>${fmt(dateOf(end))}</b></span>` +
+    `<span>Duración <b>${end}</b> días hábiles</span><span>Costo planificado <b>${total.toLocaleString("es-CL", { maximumFractionDigits: 0 })} UF</b></span>` +
+    `<span class="warn">Tareas críticas <b>${crit}</b></span>`;
+  renderGrid(); renderTimeline(end); renderPane(end);
+}
+
+function renderGrid() {
+  const g = document.getElementById("grid");
+  let html = `<div class="ghead"><span>EDT</span><span>Tarea</span><span style="text-align:right">Días</span><span style="text-align:right">Holg.</span></div>`;
+  let gi = 0, ci = 0;
+  for (const t of T) {
+    if (t.group) { gi++; ci = 0; } else ci++;
+    const wbs = t.group ? `${gi}` : `${gi}.${ci}`;
+    const tf = t.group ? "" : `<span class="num ${t.tf <= 0 ? "zero" : ""}">${t.tf}</span>`;
+    html += `<div class="row ${t.group ? "group" : "child"} ${state.sel === t.id ? "sel" : ""}" tabindex="0" data-id="${t.id}">
+      <span class="wbs">${wbs}</span><span class="nm" title="${t.name}">${t.name}</span>
+      <span class="num">${t.group ? "" : t.dur === 0 ? "◆" : t.dur}</span>${tf || "<span></span>"}</div>`;
+  }
+  g.innerHTML = html;
+  g.querySelectorAll(".row").forEach(r => {
+    r.onclick = () => select(r.dataset.id);
+    r.onkeydown = e => {
+      const i = T.findIndex(t => t.id === r.dataset.id);
+      if (e.key === "ArrowDown" && T[i + 1]) { e.preventDefault(); select(T[i + 1].id, true); }
+      if (e.key === "ArrowUp" && T[i - 1]) { e.preventDefault(); select(T[i - 1].id, true); }
+    };
+  });
+}
+
+function select(id, focus) {
+  state.sel = id; state.tab = "why"; render();
+  if (focus) document.querySelector(`.row[data-id="${id}"]`)?.focus();
+}
+
+function renderTimeline(end) {
+  const px = state.px, W = (end + 10) * px, H = HEAD + T.length * ROW;
+  const svg = el("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Carta Gantt" });
+  const ink = css("--ink"), muted = css("--muted"), line = css("--line");
+  // month ticks
+  let prev = -1;
+  for (let wd = 0; wd <= end + 10; wd++) {
+    const d = dateOf(wd);
+    if (d.getMonth() !== prev) {
+      prev = d.getMonth();
+      svg.append(el("line", { x1: wd * px, x2: wd * px, y1: 0, y2: H, stroke: line, "stroke-width": 1 }));
+      if (px * 20 > 40 || d.getMonth() % 2 === 0) svg.append(el("text", { x: wd * px + 4, y: 16, "font-size": 11, fill: muted }, `${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`));
+    }
+  }
+  // sprint bands across the software window
+  if (state.sprints) {
+    const s0 = byId.env.ef, s1 = Math.max(byId["g-sw"].ef, byId["y-sw"].ef, byId["r-sw"].ef);
+    for (let s = s0, n = 1; s < s1; s += 10, n++) {
+      if (n % 2) svg.append(el("rect", { x: s * px, y: HEAD - 14, width: 10 * px, height: H - HEAD + 14, fill: css("--sprint") }));
+      if (px >= 11) svg.append(el("text", { x: s * px + 3, y: HEAD - 4, "font-size": 10, fill: muted }, `S${n}`));
+    }
+  }
+  svg.append(el("line", { x1: 0, x2: W, y1: HEAD, y2: HEAD, stroke: line }));
+  const y = i => HEAD + i * ROW + ROW / 2;
+  const idx = Object.fromEntries(T.map((t, i) => [t.id, i]));
+  // dependency arrows
+  const arrows = el("g", { fill: "none", "stroke-width": 1.2 });
+  for (const t of T) for (const [pid, type = "FS", lag = 0] of t.deps || []) {
+    const p = byId[pid];
+    const critEdge = state.crit && p.tf <= 0 && t.tf <= 0 && t.drv.kind === "dep" && t.drv.pid === pid;
+    const col = critEdge ? css("--crit") : muted;
+    const x1 = (type === "SS" ? p.es : p.ef) * px, y1 = y(idx[pid]);
+    const x2 = t.es * px, y2 = y(idx[t.id]);
+    const mx = Math.max(x1 + 6, x2 - 6);
+    arrows.append(el("path", { d: `M${x1} ${y1} H${mx} V${y2} H${x2 - 2}`, stroke: col, opacity: critEdge ? 1 : .55 }));
+    arrows.append(el("path", { d: `M${x2 - 6} ${y2 - 3.5} L${x2 - 1} ${y2} L${x2 - 6} ${y2 + 3.5} Z`, fill: col, stroke: "none", opacity: critEdge ? 1 : .55 }));
+  }
+  svg.append(arrows);
+  // bars
+  T.forEach((t, i) => {
+    const cy = y(i), isCrit = state.crit && t.tf <= 0;
+    if (state.sel === t.id) svg.append(el("rect", { x: 0, y: cy - ROW / 2, width: W, height: ROW, fill: css("--sel") }));
+    if (t.group) {
+      const x = t.es * px, w = (t.ef - t.es) * px;
+      svg.append(el("path", { d: `M${x} ${cy - 5} H${x + w} V${cy + 4} L${x + w - 5} ${cy} H${x + 5} L${x} ${cy + 4} Z`, fill: ink, opacity: .85 }));
+      return;
+    }
+    if (t.dur === 0) {
+      const x = t.es * px;
+      const m = el("path", { d: `M${x} ${cy - 7} L${x + 7} ${cy} L${x} ${cy + 7} L${x - 7} ${cy} Z`, fill: isCrit ? css("--crit") : ink, stroke: css("--panel"), "stroke-width": 1.5 });
+      m.style.cursor = "pointer"; m.onclick = () => select(t.id);
+      svg.append(m);
+      svg.append(el("text", { x: x + 11, y: cy + 4, "font-size": 11, fill: ink }, t.name));
+      return;
+    }
+    if (t.tf > 0) svg.append(el("rect", { x: t.ef * px, y: cy - 2, width: t.tf * px, height: 4, rx: 2, fill: css("--bar-soft") }));
+    const bar = el("rect", { class: "bar", x: t.es * px, y: cy - 8, width: Math.max(2, t.dur * px), height: 16, rx: 3,
+      fill: isCrit ? css("--crit") : css("--bar"), tabindex: 0 });
+    if (t.snet != null) bar.setAttribute("stroke", ink), bar.setAttribute("stroke-dasharray", "3 2"), bar.setAttribute("stroke-width", 1.5);
+    bar.style.cursor = "grab";
+    attachDrag(bar, t);
+    svg.append(bar);
+    if (t.dur * px > 120) svg.append(el("text", { x: t.es * px + 6, y: cy + 4, "font-size": 11, fill: "#fff", "pointer-events": "none" }, t.name));
+    else svg.append(el("text", { x: t.ef * px + (t.tf > 0 ? t.tf * px : 0) + 6, y: cy + 4, "font-size": 11, fill: muted, "pointer-events": "none" }, t.name));
+  });
+  const tl = document.getElementById("tl"), sx = tl.scrollLeft;
+  tl.replaceChildren(svg); tl.scrollLeft = sx;
+}
+
+function attachDrag(bar, t) {
+  bar.onpointerdown = e => {
+    e.preventDefault(); bar.setPointerCapture(e.pointerId); bar.style.cursor = "grabbing";
+    const x0 = e.clientX, es0 = t.es, w0 = +bar.getAttribute("x");
+    let moved = false;
+    bar.onpointermove = ev => { const dx = ev.clientX - x0; if (Math.abs(dx) > 3) moved = true; bar.setAttribute("x", w0 + dx); };
+    bar.onpointerup = ev => {
+      bar.onpointermove = bar.onpointerup = null;
+      const days = Math.round((ev.clientX - x0) / state.px);
+      state.sel = t.id;
+      if (moved && days !== 0) { t.snet = Math.max(0, es0 + days); state.lastEdit = t.id; }
+      state.tab = "why"; render();
+    };
+  };
+}
+
+// ---------- Bottom drawer ----------
+function renderPane(end) {
+  for (const [id, k] of [["tWhy", "why"], ["tS", "s"], ["tFile", "file"]]) document.getElementById(id).setAttribute("aria-selected", state.tab === k);
+  const pane = document.getElementById("pane");
+  if (state.tab === "why") pane.innerHTML = whyHtml();
+  if (state.tab === "s") { pane.replaceChildren(sCurve(end)); }
+  if (state.tab === "file") pane.innerHTML = `<pre class="toml">${tomlHtml()}</pre>`;
+}
+
+function whyHtml() {
+  const t = byId[state.sel];
+  if (t.group) return `<div class="why"><h2>${t.name}</h2><p class="muted">Resumen: va del ${fmt(dateOf(t.es))} al ${fmt(dateOf(t.ef))}. Elige una tarea para ver qué la empuja.</p></div>`;
+  const chain = []; let c = t;
+  while (c && c.drv) {
+    chain.unshift(c);
+    c = c.drv.kind === "dep" ? byId[c.drv.pid] : null;
+  }
+  const chips = chain.map(x => `<span class="chip ${x.tf <= 0 ? "crit" : ""}">${x.id}</span>`).join(`<span class="muted">→</span>`);
+  const d = t.drv;
+  const reason = d.kind === "snet" ? `Tiene una restricción <b>no comenzar antes de</b> ${fmt(dateOf(t.snet))}, que fijaste al arrastrar la barra. Pesa más que sus predecesoras.`
+    : d.kind === "start" ? `Comienza con el proyecto: no tiene predecesoras que la retrasen.`
+    : `La fija <b>${byId[d.pid].name}</b> (${d.pid}), con una dependencia ${d.type === "FS" ? "fin a inicio" : d.type === "SS" ? "inicio a inicio" : "fin a fin"}${d.lag ? ` y un desfase de ${d.lag} días hábiles` : ""}.`;
+  const crit = t.tf <= 0 ? `Está en la <b>ruta crítica</b>: cualquier atraso mueve el fin del proyecto.` : `Tiene <b>${t.tf}</b> días hábiles de holgura total antes de mover el fin del proyecto.`;
+  return `<div class="why"><h2>${t.name}</h2>
+    <div>${fmt(dateOf(t.es))} → ${fmt(dateOf(t.ef))} · ${t.dur === 0 ? "hito (duración cero)" : t.dur + " días hábiles"} · costo ${cost(t).toLocaleString("es-CL", { maximumFractionDigits: 0 })} UF</div>
+    <div>${reason} ${crit}</div>
+    <div class="chain"><span class="muted">Cadena que la determina:</span> ${chips}</div></div>`;
+}
+
+function sCurve(end) {
+  const daily = new Array(end + 1).fill(0);
+  for (const t of T) if (!t.group && t.dur > 0) { const c = cost(t) / t.dur; for (let d = t.es; d < t.ef; d++) daily[d] += c; }
+  else if (!t.group && t.fixed) daily[t.es] += t.fixed;
+  const cum = []; daily.reduce((s, v, i) => (cum[i] = s + v), 0);
+  const total = cum[cum.length - 1], W = 640, H = 200, L = 52, B = 24, R = 12, Tp = 10;
+  const x = d => L + d / end * (W - L - R), yv = v => H - B - v / total * (H - B - Tp);
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", style: "max-width:720px", role: "img", "aria-label": "Curva S del valor planificado acumulado" });
+  const muted = css("--muted"), line = css("--line");
+  const step = Math.pow(10, Math.floor(Math.log10(total))) / 2;
+  for (let v = 0; v <= total; v += step) {
+    svg.append(el("line", { x1: L, x2: W - R, y1: yv(v), y2: yv(v), stroke: line }));
+    svg.append(el("text", { x: L - 6, y: yv(v) + 4, "font-size": 10, fill: muted, "text-anchor": "end" }, Math.round(v).toLocaleString("es-CL")));
+  }
+  let prev = -1;
+  for (let d = 0; d <= end; d++) { const m = dateOf(d).getMonth(); if (m !== prev) { prev = m; if (m % 2 === 0) svg.append(el("text", { x: x(d), y: H - 6, "font-size": 10, fill: muted }, MONTHS[m])); } }
+  const pts = cum.map((v, d) => `${x(d).toFixed(1)},${yv(v).toFixed(1)}`).join(" ");
+  svg.append(el("polygon", { points: `${x(0)},${yv(0)} ${pts} ${x(end)},${yv(0)}`, fill: css("--bar-soft") }));
+  svg.append(el("polyline", { points: pts, fill: "none", stroke: css("--bar"), "stroke-width": 2 }));
+  svg.append(el("circle", { cx: x(end), cy: yv(total), r: 3.5, fill: css("--bar") }));
+  svg.append(el("text", { x: x(end) - 6, y: yv(total) + 16, "font-size": 11, fill: css("--ink"), "text-anchor": "end" }, `${Math.round(total).toLocaleString("es-CL")} UF`));
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `<p class="note" style="margin:0 0 6px">Valor planificado acumulado (UF): tarifa del rol × unidades × días hábiles de cada tarea, más costos fijos. Se recalcula con cada cambio del cronograma.</p>`;
+  wrap.append(svg); return wrap;
+}
+
+function tomlHtml() {
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const out = [`<span class="c"># plan_tos.alma.toml — fragmento. Las fechas calculadas no se guardan: solo los datos.</span>`,
+    `<span class="k">[project]</span>`, `name = "Reemplazo TOS — Etapa 1"`, `start = 2027-01-04`, `currency = "UF"`, ``];
+  for (const t of T) {
+    const changed = state.lastEdit === t.id;
+    const lines = [`<span class="k">[[task]]</span>`, `id = "${t.id}"`];
+    if (t.p) lines.push(`parent = "${t.p}"`);
+    lines.push(`name = "${esc(t.name)}"`);
+    if (t.group) { out.push(...lines, ""); continue; }
+    if (t.dur === 0) lines.push(`kind = "milestone"`); else lines.push(`duration = "${t.dur}d"`);
+    if (t.deps) lines.push(`deps = [${t.deps.map(([p, ty, l]) => `{ pred = "${p}"${ty && ty !== "FS" ? `, type = "${ty}"` : ""}${l ? `, lag = "${l}d"` : ""} }`).join(", ")}]`);
+    if (t.snet != null) lines.push(`<span class="hl">constraint = { snet = ${dateOf(t.snet).toISOString().slice(0, 10)} }</span>`);
+    if (t.as) lines.push(`assign = [${t.as.map(([r, u]) => `{ resource = "${r}", units = ${u} }`).join(", ")}]`);
+    if (t.fixed) lines.push(`fixed_cost = "${t.fixed}"`);
+    out.push(...lines, "");
+  }
+  return out.join("\n") + (state.lastEdit ? `\n<span class="c"># La línea resaltada es todo el diff que produce tu último arrastre.</span>` : "");
+}
+
+// ---------- Controls ----------
+const toggle = (id, key) => document.getElementById(id).onclick = e => { state[key] = !state[key]; e.currentTarget.setAttribute("aria-pressed", state[key]); render(); };
+toggle("bCrit", "crit"); toggle("bSprints", "sprints");
+document.getElementById("zoom").onchange = e => { state.px = +e.target.value; render(); };
+document.getElementById("bReset").onclick = () => { T.forEach(t => delete t.snet); state.lastEdit = null; render(); };
+document.getElementById("tWhy").onclick = () => { state.tab = "why"; render(); };
+document.getElementById("tS").onclick = () => { state.tab = "s"; render(); };
+document.getElementById("tFile").onclick = () => { state.tab = "file"; render(); };
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", render);
+new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+render();
+</script>

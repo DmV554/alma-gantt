@@ -1,0 +1,17 @@
+[
+{"op":"task.set","id":"discovery","fields":{"acceptance":"Solution design document ready for the decision gate","description":"Three-point estimate 25 / 30 / 40 days (PERT mean about 31 d); planned at 6 weeks","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"environments","fields":{"acceptance":"Development, test and staging environments available","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"cicd","fields":{"acceptance":"Pipeline builds, tests and deploys to every environment"}},
+{"op":"task.set","id":"gate-sw","fields":{"acceptance":"Gate software stories done and passing tests","constraint":"SNET:2027-04-05","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"ocr-procure","fields":{"acceptance":"OCR portals delivered on site","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"ocr-install","fields":{"acceptance":"OCR portals installed and reading plates at every gate","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"yard-sw","fields":{"acceptance":"Yard software stories done and passing tests","constraint":"SNET:2027-04-05","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"lte","fields":{"acceptance":"Private LTE network covers the whole yard","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"reefer-sw","fields":{"acceptance":"Reefer software stories done and passing tests","constraint":"SNET:2027-04-05","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"sensors","fields":{"acceptance":"Every reefer socket reports through the LTE network","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"int-test","fields":{"acceptance":"End-to-end test suite passes with no blocking defects","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"uat","fields":{"acceptance":"Client signs the UAT report"}},
+{"op":"task.set","id":"shadow","fields":{"acceptance":"Every zone runs in shadow mode with matching results"}},
+{"op":"task.set","id":"stabilization","fields":{"acceptance":"No severity-1 incidents across three shifts","allow":["L-WBS-05"]}},
+{"op":"task.set","id":"closed","fields":{"acceptance":"Stage 1 closure report approved by the project sponsor"}}
+]

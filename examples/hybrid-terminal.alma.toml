@@ -1,0 +1,303 @@
+# Example hybrid plan: replacing a container terminal operating system (Stage 1).
+# Predictive frame (contract milestones, field work, go-live) with Scrum software subprojects.
+# Target fixture for M0: the parser, CPM and lint rules must handle it. Figures are illustrative.
+
+[project]
+format = 0
+name = "Terminal TOS replacement - Stage 1"
+start = 2027-01-04
+calendar = "cl-standard"
+currency = "UF"
+
+[settings.schedule]
+reporting_period = "month"
+
+[rules.severity]
+# The 8/80-hour work package heuristic does not fit a nine-month plan with several teams:
+# its work packages are 100 to 2,000 person-hours on purpose.
+"L-WBS-05" = "off"
+# Work packages here span one to three reporting periods; progress is reported per sprint.
+"L-WBS-06" = "off"
+
+[[calendar]]
+id = "cl-standard"
+workdays = ["mon", "tue", "wed", "thu", "fri"]
+hours = ["09:00-13:00", "14:00-18:00"]
+exceptions = [
+  { name = "Peak season freeze", from = 2027-12-15, to = 2028-04-30, working = false },
+]
+
+[[resource]]
+id = "pm"
+name = "Project manager"
+kind = "work"
+rate = { amount = "6.0", per = "day" }
+max_units = 1
+
+[[resource]]
+id = "dev"
+name = "Developer"
+kind = "work"
+rate = { amount = "4.2", per = "day" }
+max_units = 6
+
+[[resource]]
+id = "qa"
+name = "QA engineer"
+kind = "work"
+rate = { amount = "3.6", per = "day" }
+max_units = 3
+
+[[resource]]
+id = "fld"
+name = "Field technician"
+kind = "work"
+rate = { amount = "3.1", per = "day" }
+max_units = 4
+
+[[cadence]]
+id = "sprints"
+name = "Sprint"
+prefix = "s"
+start = 2027-04-05
+length = "10d"
+count = 12
+
+# --- Management -------------------------------------------------------------
+
+[[task]]
+id = "mgmt"
+name = "Project management"
+wbs_role = "control_account"
+approach = "predictive"
+
+[[task]]
+id = "kickoff"
+parent = "mgmt"
+name = "Contract start"
+kind = "milestone"
+class = "contractual"
+owner = "pm"
+acceptance = "Contract signed by both parties"
+
+[[task]]
+id = "discovery"
+parent = "mgmt"
+name = "Discovery and solution design"
+wbs_role = "work_package"
+owner = "pm"
+duration = "30d"
+estimate = { o = "25d", m = "30d", p = "40d" }
+deps = [{ pred = "kickoff" }]
+assign = [{ resource = "pm", units = 1 }, { resource = "dev", units = 2 }]
+
+[[task]]
+id = "decision-gate"
+parent = "mgmt"
+name = "Decision gate"
+kind = "milestone"
+class = "contractual"
+owner = "pm"
+acceptance = "Client approves the solution design"
+deps = [{ pred = "discovery" }]
+
+# --- Platform ---------------------------------------------------------------
+
+[[task]]
+id = "platform"
+name = "Platform"
+wbs_role = "control_account"
+approach = "predictive"
+
+[[task]]
+id = "platform-env"
+parent = "platform"
+name = "Environments"
+wbs_role = "work_package"
+owner = "dev"
+duration = "10d"
+deps = [{ pred = "decision-gate" }]
+assign = [{ resource = "dev", units = 2 }]
+
+[[task]]
+id = "platform-cicd"
+parent = "platform"
+name = "CI/CD pipeline"
+wbs_role = "work_package"
+owner = "dev"
+duration = "5d"
+deps = [{ pred = "platform-env" }]
+assign = [{ resource = "dev", units = 2 }]
+
+# --- Gate subproject --------------------------------------------------------
+
+[[task]]
+id = "gate"
+name = "Gate subproject"
+wbs_role = "control_account"
+
+[[task]]
+id = "gate-sw"
+parent = "gate"
+name = "Gate software (4 sprints)"
+wbs_role = "work_package"
+approach = "iterative"
+owner = "dev"
+duration = "40d"
+deps = [{ pred = "platform-cicd" }]
+assign = [{ resource = "dev", units = 3 }, { resource = "qa", units = 1 }]
+
+[[task]]
+id = "gate-ocr-procure"
+parent = "gate"
+name = "Procure OCR portals"
+wbs_role = "work_package"
+owner = "pm"
+duration = "20d"
+deps = [{ pred = "decision-gate" }]
+
+[[task]]
+id = "gate-ocr"
+parent = "gate"
+name = "Install OCR portals at the gates"
+wbs_role = "work_package"
+owner = "fld"
+duration = "15d"
+deps = [{ pred = "gate-ocr-procure" }]
+assign = [{ resource = "fld", units = 2 }]
+fixed_cost = { amount = "180", accrue = "start", category = "investment" }
+
+# --- Yard subproject --------------------------------------------------------
+
+[[task]]
+id = "yard"
+name = "Yard subproject"
+wbs_role = "control_account"
+
+[[task]]
+id = "yard-sw"
+parent = "yard"
+name = "Yard software (5 sprints)"
+wbs_role = "work_package"
+approach = "iterative"
+owner = "dev"
+duration = "50d"
+deps = [{ pred = "platform-cicd" }]
+assign = [{ resource = "dev", units = 4 }, { resource = "qa", units = 1 }]
+
+[[task]]
+id = "yard-lte"
+parent = "yard"
+name = "Private LTE network in the yard"
+wbs_role = "work_package"
+owner = "fld"
+duration = "25d"
+deps = [{ pred = "decision-gate" }]
+assign = [{ resource = "fld", units = 3 }]
+fixed_cost = { amount = "420", accrue = "prorated", category = "investment" }
+
+# --- Reefer subproject ------------------------------------------------------
+
+[[task]]
+id = "reefer"
+name = "Reefer subproject"
+wbs_role = "control_account"
+
+[[task]]
+id = "reefer-sw"
+parent = "reefer"
+name = "Reefer software (3 sprints)"
+wbs_role = "work_package"
+approach = "iterative"
+owner = "dev"
+duration = "30d"
+deps = [{ pred = "platform-env", nature = "discretionary", rationale = "Starts on the shared environments, before the CI pipeline is finished" }]
+assign = [{ resource = "dev", units = 2 }, { resource = "qa", units = 1 }]
+
+[[task]]
+id = "reefer-sensors"
+parent = "reefer"
+name = "Sensors on reefer sockets"
+wbs_role = "work_package"
+owner = "fld"
+duration = "20d"
+deps = [{ pred = "yard-lte", nature = "mandatory" }]
+assign = [{ resource = "fld", units = 2 }]
+fixed_cost = { amount = "260", accrue = "start", category = "investment" }
+
+# --- Testing and go-live ----------------------------------------------------
+
+[[task]]
+id = "golive"
+name = "Testing and go-live"
+wbs_role = "control_account"
+approach = "predictive"
+
+[[task]]
+id = "integration-tests"
+parent = "golive"
+name = "Integrated testing"
+wbs_role = "work_package"
+owner = "qa"
+duration = "15d"
+deps = [{ pred = "gate-sw" }, { pred = "yard-sw" }, { pred = "reefer-sw" }]
+assign = [{ resource = "qa", units = 3 }, { resource = "dev", units = 2 }]
+
+[[task]]
+id = "h4"
+parent = "golive"
+name = "H4 - Stage 1 software delivered for testing"
+kind = "milestone"
+class = "contractual"
+owner = "pm"
+acceptance = "Client receives the Stage 1 build and test report"
+deadline = 2027-10-29
+deps = [{ pred = "integration-tests" }]
+
+[[task]]
+id = "uat"
+parent = "golive"
+name = "User acceptance testing"
+wbs_role = "work_package"
+owner = "qa"
+duration = "10d"
+deps = [{ pred = "h4" }]
+assign = [{ resource = "qa", units = 2 }, { resource = "pm", units = 1 }]
+
+[[task]]
+id = "pilot"
+parent = "golive"
+name = "Shadow run by zone"
+wbs_role = "work_package"
+owner = "pm"
+duration = "15d"
+deps = [{ pred = "uat" }, { pred = "gate-ocr" }, { pred = "reefer-sensors" }]
+assign = [{ resource = "dev", units = 2 }, { resource = "fld", units = 2 }]
+
+[[task]]
+id = "production"
+parent = "golive"
+name = "Stage 1 in production"
+kind = "milestone"
+class = "contractual"
+owner = "pm"
+acceptance = "All zones run on the new system for one full shift"
+deps = [{ pred = "pilot" }]
+
+[[task]]
+id = "stabilization"
+parent = "golive"
+name = "Stabilization across three shifts"
+wbs_role = "work_package"
+owner = "dev"
+duration = "15d"
+deps = [{ pred = "production" }]
+assign = [{ resource = "dev", units = 2 }, { resource = "qa", units = 1 }]
+
+[[task]]
+id = "finish"
+parent = "golive"
+name = "Stage 1 closed"
+kind = "milestone"
+class = "internal"
+deps = [{ pred = "stabilization" }]

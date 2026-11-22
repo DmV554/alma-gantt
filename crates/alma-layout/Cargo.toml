@@ -1,0 +1,18 @@
+[package]
+name = "alma-layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alma-core.workspace = true
+alma-sched.workspace = true
+jiff.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

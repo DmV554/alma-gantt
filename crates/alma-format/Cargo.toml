@@ -1,0 +1,19 @@
+[package]
+name = "alma-format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alma-core.workspace = true
+jiff.workspace = true
+rust_decimal.workspace = true
+toml_edit.workspace = true
+
+[dev-dependencies]
+toml_edit.workspace = true
