@@ -119,8 +119,8 @@ enum Cmd {
     },
     /// Export a chart (.svg, .png), the task table (.csv) or the cost workbook (.xlsx: cost per
     /// period, tasks, resources, risks); `-` writes SVG or CSV to stdout.
-    /// Charts: the Gantt chart (default), a resource histogram, the S-curve. `render` is an
-    /// alias.
+    /// Charts: the Gantt chart (default), a resource histogram, the S-curve, a sprint burndown,
+    /// a cadence burnup. `render` is an alias.
     #[command(alias = "render")]
     Export {
         /// Output file; the extension picks the format unless --format is given.
@@ -128,12 +128,18 @@ enum Cmd {
         /// svg, png, csv or xlsx.
         #[arg(long)]
         format: Option<String>,
-        /// gantt, histogram (needs --resource) or scurve.
+        /// gantt, histogram (needs --resource), scurve, burndown (needs --iteration) or burnup.
         #[arg(long)]
         chart: Option<String>,
         /// Resource id, for --chart histogram.
         #[arg(long)]
         resource: Option<String>,
+        /// Iteration id, for --chart burndown.
+        #[arg(long)]
+        iteration: Option<String>,
+        /// Cadence id, for --chart burnup (default: the only one).
+        #[arg(long)]
+        cadence: Option<String>,
         /// day, week or month, for histogram (default week), scurve and xlsx (default month).
         #[arg(long)]
         period: Option<String>,
@@ -1923,6 +1929,8 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
             format,
             chart,
             resource,
+            iteration,
+            cadence,
             period,
             baseline,
             range,
@@ -1959,6 +1967,8 @@ fn run(cli: Cli) -> Result<ExitCode, Usage> {
                 resource,
                 period,
                 baseline,
+                iteration,
+                cadence,
             };
             let bytes: Vec<u8> = match format.as_str() {
                 "svg" => alma_ops::export::svg(plan, s, &req)

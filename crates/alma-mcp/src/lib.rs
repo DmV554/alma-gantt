@@ -423,10 +423,12 @@ pub fn tools() -> Vec<Tool> {
         )),
         read_only(Tool::new(
             "render",
-            "Render a chart and return it as an image (PNG) so you can look at it, or as SVG text: the Gantt chart (default), a resource histogram (demand vs capacity) or the S-curve (forecast and planned value).",
+            "Render a chart and return it as an image (PNG) so you can look at it, or as SVG text: the Gantt chart (default), a resource histogram (demand vs capacity), the S-curve (forecast and planned value), a sprint burndown (points left per day vs the ideal line) or a cadence burnup (points done and planned per iteration vs total scope).",
             schema(
                 json!({
-                    "chart": { "enum": ["gantt", "histogram", "scurve"], "description": "Default gantt" },
+                    "chart": { "enum": ["gantt", "histogram", "scurve", "burndown", "burnup"], "description": "Default gantt" },
+                    "iteration": { "type": "string", "description": "Iteration id, for burndown" },
+                    "cadence": { "type": "string", "description": "Cadence id, for burnup (default: the only one)" },
                     "resource": { "type": "string", "description": "Resource id, for histogram" },
                     "period": { "enum": ["day", "week", "month"], "description": "histogram (default week) and scurve (default month)" },
                     "baseline": { "type": "string", "description": "scurve: baseline for planned value (default the active one)" },
@@ -441,11 +443,13 @@ pub fn tools() -> Vec<Tool> {
         )),
         Tool::new(
             "export",
-            "Write a chart (.svg, .png: gantt, histogram or scurve), the task table (.csv) or the cost workbook (.xlsx: cost per period by resource and category, tasks, resources, risks) to a file.",
+            "Write a chart (.svg, .png: gantt, histogram, scurve, burndown or burnup), the task table (.csv) or the cost workbook (.xlsx: cost per period by resource and category, tasks, resources, risks) to a file.",
             schema(
                 json!({
                     "out": { "type": "string" },
-                    "chart": { "enum": ["gantt", "histogram", "scurve"] },
+                    "chart": { "enum": ["gantt", "histogram", "scurve", "burndown", "burnup"] },
+                    "iteration": { "type": "string" },
+                    "cadence": { "type": "string" },
                     "resource": { "type": "string" },
                     "period": { "enum": ["day", "week", "month"] },
                     "baseline": { "type": "string" },
@@ -591,6 +595,8 @@ impl AlmaServer {
             resource: str_arg(args, "resource").map(str::to_string),
             period: str_arg(args, "period").map(str::to_string),
             baseline,
+            iteration: str_arg(args, "iteration").map(str::to_string),
+            cadence: str_arg(args, "cadence").map(str::to_string),
         })
     }
 

@@ -457,4 +457,12 @@ fn iteration_tools() {
     assert_eq!(r.json["cadences"][0]["iterations"][1]["capacity"], 21.0);
     let r = s.call("iterations", &args(json!({ "cadence": "nope" })));
     assert!(r.is_error);
+    let r = s.call(
+        "render",
+        &args(json!({ "chart": "burndown", "iteration": "s02", "format": "svg" })),
+    );
+    assert!(!r.is_error, "{}", r.json);
+    let r = s.call("render", &args(json!({ "chart": "burnup" })));
+    assert!(!r.is_error, "{}", r.json);
+    assert!(r.png.is_some());
 }

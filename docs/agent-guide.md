@@ -98,6 +98,8 @@ alma export gantt.svg | plan.csv | - --format csv
 alma export dev.png --chart histogram --resource dev [--period week]   # demand vs capacity
 alma export curve.png --chart scurve [--period month] [--baseline b1]  # forecast vs planned
 alma export costs.xlsx [--period month]  # workbook: cost per period, tasks, resources, risks
+alma export burn.png --chart burndown --iteration s03   # points left per day vs ideal
+alma export up.png --chart burnup [--cadence sprints]   # points done and planned vs scope
 
 alma check [--min warn] [--limit N --cursor C]
 alma ls [--parent P] [--critical] [--kind milestone] [--fields id,name,start,finish,tf]

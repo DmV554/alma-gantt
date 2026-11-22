@@ -249,3 +249,38 @@ fn stories_take_no_duration_or_links() {
     );
     assert!(load(&dep).diagnostics.iter().any(|d| d.code == "E-FMT-03"));
 }
+
+/// s02 has ten working days and 13 points. The ideal line loses 1.3 points a day. `st4`
+/// (8 points) finished on 01-27, the eighth day, so 5 points are left from then to the status
+/// date 01-29, the last day.
+#[test]
+fn burndown_of_an_iteration() {
+    let l = load(PLAN);
+    let b = alma_ops::agile::burndown(l.plan.as_ref().unwrap(), "s02").unwrap();
+    assert_eq!(b.days.len(), 10);
+    assert_eq!(
+        (b.days[0].as_str(), b.days[9].as_str()),
+        ("2027-01-18", "2027-01-29")
+    );
+    assert_eq!(b.committed, 13.0);
+    assert_eq!((b.ideal[0], b.ideal[9]), (11.7, 0.0));
+    assert_eq!(
+        b.remaining,
+        [13.0, 13.0, 13.0, 13.0, 13.0, 13.0, 13.0, 5.0, 5.0, 5.0]
+    );
+    // s03 has not started: no actual line.
+    let b3 = alma_ops::agile::burndown(l.plan.as_ref().unwrap(), "s03").unwrap();
+    assert!(b3.remaining.is_empty());
+    assert!(alma_ops::agile::burndown(l.plan.as_ref().unwrap(), "s99").is_err());
+}
+
+/// Planned: 18, 31, 39, 39. Done through the started iterations: 13, then 21. Scope: the 39
+/// points in sprints plus 16 in the backlog.
+#[test]
+fn burnup_of_a_cadence() {
+    let l = load(PLAN);
+    let b = alma_ops::agile::burnup(l.plan.as_ref().unwrap(), None).unwrap();
+    assert_eq!(b.planned, [18.0, 31.0, 39.0, 39.0]);
+    assert_eq!(b.done, [13.0, 21.0]);
+    assert_eq!(b.scope, 55.0);
+}

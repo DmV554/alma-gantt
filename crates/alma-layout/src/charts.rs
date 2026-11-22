@@ -29,6 +29,9 @@ pub struct Series {
     /// A staircase: each value holds across its whole period (funding available from the
     /// start of the period), drawn in the muted color.
     pub step: bool,
+    /// Value at the start of the first period: 0 for a cumulative curve, the committed points
+    /// for a burndown.
+    pub origin: f64,
 }
 
 /// Cumulative curves per period, with an optional horizontal ceiling.
@@ -90,11 +93,14 @@ struct Frame {
 }
 
 impl Frame {
-    fn new(n: usize, ymax: f64) -> Self {
+    /// A frame for `n` periods, at least `min_plot` wide so the title and legend fit.
+    fn new(n: usize, ymax: f64, min_plot: f64) -> Self {
         let col = if n == 0 {
             40.0
         } else {
-            (1100.0 / n as f64).clamp(6.0, 56.0)
+            (1100.0 / n as f64)
+                .clamp(6.0, 56.0)
+                .max(min_plot / n as f64)
         };
         let step = nice_step(ymax);
         let ymax = ((ymax / step).ceil() * step).max(step);
@@ -113,6 +119,15 @@ impl Frame {
     fn x(&self, i: usize) -> f64 {
         LEFT + self.col * i as f64
     }
+}
+
+/// Plot width the title and the legend need side by side.
+fn header_width(title: &str, legend: &[&str], font: f64) -> f64 {
+    let items: f64 = legend
+        .iter()
+        .map(|n| text_width(n, font, Weight::Normal) + 28.0)
+        .sum();
+    text_width(title, font + 2.0, Weight::Bold) + items + 24.0
 }
 
 /// Title, y grid with ticks, x labels (thinned so they never overlap) and the frame.
@@ -231,7 +246,12 @@ pub fn histogram(data: &HistogramData, theme: Theme, font: f64) -> DisplayList {
         .chain(&data.capacity)
         .copied()
         .fold(0.0, f64::max);
-    let f = Frame::new(n, top);
+    let min_plot = header_width(
+        &data.title,
+        &["demand", "over capacity", "capacity"],
+        font.max(crate::MIN_FONT),
+    );
+    let f = Frame::new(n, top, min_plot);
     let mut prims = Vec::new();
     axes(&mut prims, &f, &data.title, "h", &data.labels, &theme, font);
     let gap = (f.col * 0.15).min(4.0);
@@ -305,10 +325,16 @@ pub fn curve(data: &CurveData, theme: Theme, font: f64) -> DisplayList {
     let top = data
         .series
         .iter()
-        .flat_map(|s| s.values.iter().copied())
+        .flat_map(|s| s.values.iter().copied().chain([s.origin]))
         .chain(data.ceiling.as_ref().map(|c| c.1))
         .fold(0.0, f64::max);
-    let f = Frame::new(n, top);
+    let names: Vec<&str> = data
+        .series
+        .iter()
+        .map(|s| s.name.as_str())
+        .chain(data.ceiling.as_ref().map(|c| c.0.as_str()))
+        .collect();
+    let f = Frame::new(n, top, header_width(&data.title, &names, font));
     let mut prims = Vec::new();
     axes(
         &mut prims,
@@ -359,8 +385,9 @@ pub fn curve(data: &CurveData, theme: Theme, font: f64) -> DisplayList {
             continue;
         }
         let color = if s.main { theme.bar } else { theme.ink };
-        // Values are at the end of each period: start from zero at the first period's start.
-        let mut points = vec![(f.x(0), f.y(0.0))];
+        // Values are at the end of each period: start from the origin at the first period's
+        // start.
+        let mut points = vec![(f.x(0), f.y(s.origin))];
         points.extend(
             s.values
                 .iter()
@@ -428,6 +455,34 @@ mod tests {
             .count();
         assert_eq!(crit, 1, "only the first week is over capacity");
         assert!(l.width >= LEFT + RIGHT);
+    }
+
+    #[test]
+    fn title_and_legend_fit_with_few_periods() {
+        let d = CurveData {
+            title: "Burnup of sprints: points per iteration, cumulative".into(),
+            unit: "points".into(),
+            labels: vec!["s01".into(), "s02".into()],
+            series: vec![Series {
+                name: "planned".into(),
+                values: vec![10.0, 20.0],
+                main: true,
+                step: false,
+                origin: 0.0,
+            }],
+            ceiling: Some(("scope".into(), 30.0)),
+        };
+        let l = curve(&d, Theme::LIGHT, 10.0);
+        let title_end = LEFT + text_width(&d.title, 12.0, Weight::Bold);
+        let first_legend = l
+            .prims
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Rect { x, y, .. } if *y < TOP => Some(*x),
+                _ => None,
+            })
+            .fold(f64::INFINITY, f64::min);
+        assert!(first_legend > title_end, "{first_legend} <= {title_end}");
     }
 
     #[test]

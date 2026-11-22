@@ -1571,3 +1571,58 @@ fn iterations_stories_and_velocity() {
     );
     assert_eq!(p.text(), before);
 }
+
+#[test]
+fn burndown_and_burnup_charts() {
+    let p = Plan::new("burn");
+    p.json(&[
+        "task", "add", "stories", "--name", "Stories", "--parent", "gate",
+    ]);
+    let (code, v) = p.json(&[
+        "task",
+        "add",
+        "st1",
+        "--name",
+        "Story",
+        "--parent",
+        "stories",
+        "--kind",
+        "story",
+        "--field",
+        "points=5",
+        "--field",
+        "iteration=s01",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let out = p.dir.join("burn.svg");
+    let (code, v) = p.json(&[
+        "export",
+        out.to_str().unwrap(),
+        "--chart",
+        "burndown",
+        "--iteration",
+        "s01",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert!(
+        std::fs::read_to_string(&out)
+            .unwrap()
+            .contains("Burndown of s01")
+    );
+    let up = p.dir.join("up.png");
+    let (code, v) = p.json(&["export", up.to_str().unwrap(), "--chart", "burnup"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(std::fs::metadata(&up).unwrap().len() > 1000);
+    // A burndown needs an iteration that exists.
+    let (code, v) = p.json(&["export", out.to_str().unwrap(), "--chart", "burndown"]);
+    assert_eq!(code, 2, "{v}");
+    let (code, _) = p.json(&[
+        "export",
+        out.to_str().unwrap(),
+        "--chart",
+        "burndown",
+        "--iteration",
+        "s99",
+    ]);
+    assert_eq!(code, 2);
+}

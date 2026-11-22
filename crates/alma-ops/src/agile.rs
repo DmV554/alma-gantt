@@ -227,3 +227,128 @@ pub fn report(plan: &Plan, cadence: Option<&str>) -> Result<IterReport, String> 
         backlog_items: backlog.len(),
     })
 }
+
+/// Points left in an iteration, day by day (knowledge notes, scheduling §5.7).
+#[derive(Debug, Clone, Serialize)]
+pub struct Burndown {
+    /// Iteration id.
+    pub iteration: String,
+    /// Working days of the iteration.
+    pub days: Vec<String>,
+    /// Points committed to it.
+    pub committed: f64,
+    /// The ideal line: points left at the end of each day if work burned down evenly.
+    pub ideal: Vec<f64>,
+    /// Points left at the end of each day, through the status date.
+    pub remaining: Vec<f64>,
+}
+
+/// The burndown of iteration `id`.
+pub fn burndown(plan: &Plan, id: &str) -> Result<Burndown, String> {
+    let cals = Calendars::new(plan);
+    let index = PlanIndex::new(plan);
+    let iters = iterations(plan, &cals);
+    let it = iters.iter().find(|it| it.id == id).ok_or_else(|| {
+        let ids: Vec<&str> = iters.iter().map(|i| i.id.as_str()).collect();
+        format!("no iteration `{id}`; iterations: {}", ids.join(", "))
+    })?;
+    let c = &plan.cadences[it.cadence];
+    let cal = c
+        .calendar
+        .as_deref()
+        .and_then(|x| cals.by_id(x))
+        .unwrap_or(cals.project());
+    let work_days: Vec<i64> = (alma_core::time::day_of(it.start)
+        ..=alma_core::time::day_of(it.end - 1))
+        .filter(|&d| !cal.intervals(d).is_empty())
+        .collect();
+    let items: Vec<usize> = (0..plan.tasks.len())
+        .filter(|&i| !index.is_summary(i) && plan.tasks[i].iteration.as_deref() == Some(id))
+        .collect();
+    let committed: Decimal = items
+        .iter()
+        .map(|&i| plan.tasks[i].points.unwrap_or_default())
+        .sum();
+    let n = Decimal::from(work_days.len().max(1));
+    let status = plan.project.status_date;
+    let mut ideal = Vec::new();
+    let mut remaining = Vec::new();
+    for (k, &d) in work_days.iter().enumerate() {
+        let date = alma_core::time::date_of_day(d);
+        ideal.push(num(committed - committed * Decimal::from(k + 1) / n));
+        if status.is_some_and(|s| date <= s) {
+            let done: Decimal = items
+                .iter()
+                .filter(|&&i| plan.tasks[i].actual_finish.is_some_and(|f| f <= date))
+                .map(|&i| plan.tasks[i].points.unwrap_or_default())
+                .sum();
+            remaining.push(num(committed - done));
+        }
+    }
+    Ok(Burndown {
+        iteration: id.to_string(),
+        days: work_days
+            .iter()
+            .map(|&d| alma_core::time::date_of_day(d).to_string())
+            .collect(),
+        committed: num(committed),
+        ideal,
+        remaining,
+    })
+}
+
+/// Points planned and finished per iteration of a cadence, cumulative (knowledge notes,
+/// scheduling §5.7).
+#[derive(Debug, Clone, Serialize)]
+pub struct Burnup {
+    /// Cadence id.
+    pub cadence: String,
+    /// Iteration ids.
+    pub iterations: Vec<String>,
+    /// Cumulative points committed through each iteration.
+    pub planned: Vec<f64>,
+    /// Cumulative points finished through each iteration, for iterations that have started
+    /// by the status date.
+    pub done: Vec<f64>,
+    /// Total scope: all points of the cadence, plus the backlog when the plan has one cadence.
+    pub scope: f64,
+}
+
+/// The burnup of cadence `id` (the only cadence when `None`).
+pub fn burnup(plan: &Plan, id: Option<&str>) -> Result<Burnup, String> {
+    let r = report(plan, id)?;
+    let c = match (id, r.cadences.as_slice()) {
+        (_, [one]) => one,
+        (None, []) => return Err("the plan has no cadence; add one with `alma iter add`".into()),
+        _ => {
+            let ids: Vec<&str> = r.cadences.iter().map(|c| c.id.as_str()).collect();
+            return Err(format!(
+                "the plan has several cadences; pick one with --cadence ({})",
+                ids.join(", ")
+            ));
+        }
+    };
+    let mut planned = Vec::new();
+    let mut done = Vec::new();
+    let (mut p, mut d) = (0.0, 0.0);
+    for it in &c.iterations {
+        p += it.committed;
+        d += it.done;
+        planned.push(p);
+        if it.state != "planned" {
+            done.push(d);
+        }
+    }
+    let backlog = if plan.cadences.len() == 1 {
+        r.backlog
+    } else {
+        0.0
+    };
+    Ok(Burnup {
+        cadence: c.id.clone(),
+        iterations: c.iterations.iter().map(|i| i.id.clone()).collect(),
+        planned,
+        done,
+        scope: p + backlog,
+    })
+}
